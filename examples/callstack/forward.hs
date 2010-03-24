@@ -35,7 +35,7 @@ instance (A a, B a) => Outer a where
   outer a = "A+B, " ++ (inner a)
 
 instance (A a, IsChar a) => Outer a where
-  outer a = "IsChar, " ++ (inner a)
+  outer a = "Char, " ++ (inner a)
 
 instance Outer a where
   outer a = "Default, " ++ (inner a)
@@ -45,7 +45,7 @@ instance (A a) => Inner a where
   inner _ = "A" 
 
 instance (A a, IsChar a) => Inner a where
-  inner _ = "IsChar"
+  inner _ = "Char"
 
 instance (B a) => Inner a where
   inner _ = "B" 
