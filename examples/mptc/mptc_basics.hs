@@ -6,29 +6,29 @@ class B a where {}
 instance A Char
 instance B ()
 
-class Test2 a b where 
-  test2 :: a -> b -> [Char]
+class Test a b where 
+  test :: a -> b -> [Char]
 
-instance (A a, A b) => Test2 a b where
-  test2 _ _ = "A A"
+instance (A a, A b) => Test a b where
+  test _ _ = "A A"
 
-instance (A a, B b) => Test2 a b where
-  test2 a b = "A B (" ++ (test2 a a) ++ ", " ++ (test2 b b) ++ ")"
+instance (A a, B b) => Test a b where
+  test a b = "A B (" ++ (test a a) ++ ", " ++ (test b b) ++ ")"
 
-instance (B a, A b) => Test2 a b where
-  test2 a b = "B A (" ++ (test2 a a) ++ ", " ++ (test2 b b) ++ ")"
+instance (B a, A b) => Test a b where
+  test a b = "B A (" ++ (test a a) ++ ", " ++ (test b b) ++ ")"
 
-instance (B a, B b) => Test2 a b where
-  test2 _ _ = "B B"
+instance (B a, B b) => Test a b where
+  test _ _ = "B B"
 
-instance Test2 a b where
-  test2 _ _ = "Default"
+instance Test a b where
+  test _ _ = "Default"
 
-main = do print $ test2 a a 
-          print $ test2 a b 
-          print $ test2 b a 
-          print $ test2 b b 
-          print $ test2 4 5
+main = do print $ test a a 
+          print $ test a b 
+          print $ test b a 
+          print $ test b b 
+          print $ test 4 5
        where a = 'a'
              b = ()
 
