@@ -51,6 +51,17 @@ Tue Mar 23 22:29:04 PDT 2010  matt@softmechanics.net
 Tue Apr  6 13:25:30 PDT 2010  matt@softmechanics.net
   * Context Constraints
 
+Wed Apr  7 11:59:59 PDT 2010  matt@softmechanics.net
+  * Better Handling of Functional Dependencies in Contexts
+  1) Need to only allow a predicate to "resolve" a type variable (replace it with
+     a concrete type) if the pred has a functional dependency, and no dependencies
+     are type variables.  Still todo, in the meantime, make sure we have at least
+     one real type (no check for fun dep).  I.e. don't resolve any variable if we
+     don't know any types.
+  2) If applyContextConstraints resolves any variables, update the type/variable
+     parameters for the instance use under consideration.
+  
+
 New patches:
 
 [Context Constraints
@@ -2382,6 +2393,195 @@ hunk ./compiler/typecheck/Inst.lhs 1522
  
       	    (matches, unifs)
 }
+[Better Handling of Functional Dependencies in Contexts
+matt@softmechanics.net**20100407185959
+ Ignore-this: f2dfb4c32f7e5e936b07e5419c199204
+ 1) Need to only allow a predicate to "resolve" a type variable (replace it with
+    a concrete type) if the pred has a functional dependency, and no dependencies
+    are type variables.  Still todo, in the meantime, make sure we have at least
+    one real type (no check for fun dep).  I.e. don't resolve any variable if we
+    don't know any types.
+ 2) If applyContextConstraints resolves any variables, update the type/variable
+    parameters for the instance use under consideration.
+ 
+] {
+hunk ./compiler/typecheck/Inst.lhs 881
+     	(theta, _) = tcSplitPhiTy (applyTys (idType dfun_id) tys)
+ 	src_loc	   = instLocSpan loc
+ 	dfun	   = HsVar dfun_id
++    ; traceTc (text "MATT: lookupSimpleInst result theta" <+> ppr theta)
+     ; if null theta then
+         return (GenInst [] (L src_loc $ HsWrap (mkWpTyApps tys) dfun))
+       else do
+hunk ./compiler/typecheck/Inst.lhs 969
+                                      return $ case r of 
+                                                    Nothing -> Nothing
+                                                    Just (_, tys_tvs) -> Just (match_inst, tys_tvs)
+-             else do -- let tvMap = map (\x->(x,TyVarTy x)) $ mapMaybe (either Just (\x -> Nothing)) match_tvs
+-                     r <- matchPredLoop [] [] predInsts
+-                     return $ if isJust r 
+-                                 then Just m
+-                                 else Nothing
+-
++             else do r <- matchPredLoop [] [] predInsts
++                     case r of
++                          Nothing -> return Nothing
++                          Just [] -> return $ Just m
++                          Just tvMap -> do { let match_tvs' = updateMatchTypes tvMap
++                                           ; traceTc (text "MATT: fixing types" <+>
++                                                vcat [ text "tvMap" <+> ppr tvMap
++                                                     , text "match_tvs" <+> ppr match_tvs
++                                                     , text "match_tvs'" <+> ppr match_tvs'
++                                                     ])
++                                           ; return $ Just (match_inst, match_tvs')
++                                           }
+         }
+hunk ./compiler/typecheck/Inst.lhs 982
+-
+       where (_, theta, _, _) = instanceHead match_inst
+             (Instance { is_tvs = tpl_tvs, is_tys = tpl_tys }) = match_inst
+ 
+hunk ./compiler/typecheck/Inst.lhs 985
++            updateMatchTypes :: [(TyVar,Type)] -> [Either TyVar Type]
++            updateMatchTypes tvMap = map update match_tvs
++              where update (Left tv) = Right $ mapTyVarType tvMap tv
++                        -- Left tv
++                    update (Right ty) = Right $ mapTyVarsToTypesType tvMap ty
++
+             matchPredLoop :: [(TyVar,Type)] -> [Inst] -> [Inst] -> TcM (Maybe [(TyVar,Type)])
+             matchPredLoop tvMap [] []  = return $ Just tvMap
+             matchPredLoop _ faileds [] 
+hunk ./compiler/typecheck/Inst.lhs 1019
+                                                      ,text "todo'" <+> ppr preds'
+                                                      ])
+                                              -- retry faileds with improvement
+-                                             matchPredLoop tvMap [] preds'
++                                             -- TODO: is ++ right?
++                                             matchPredLoop (tvMap ++ mapUpdate) [] preds'
+                         Nothing -> matchPredLoop tvMap (pred:failedPreds) preds
+ 
+             mkThetaTyMap :: Inst -> PredType -> (Inst,[(Type,Type)])
+hunk ./compiler/typecheck/Inst.lhs 1088
+                         ; let improved_params = filter (\p -> (countTyVars p) < (countTyVars pred_tys)) merged_params
+                         ; let tvMaps = map (mkTvMap . zip pred_tys) improved_params
+                         ; let improved_thetas = map improve_theta tvMaps
++
++                        -- TODO: don't improve type variables unless fun dep, we have all the dependent types
++                        -- FIXME: hack to simulate fundep restriction: must have at least one real type
++                        ; let canImprove = 0 < countTyVars pred_tys
+                         ; traceTc (text "MATT: Lookup Choices" <+>
+                              vcat [text "inst" <+> ppr inst
+                                   ,text "match_tvs" <+> ppr match_tvs
+hunk ./compiler/typecheck/Inst.lhs 1105
+                                   ,text "tvMaps" <+> ppr tvMaps
+                                   ,text "theta" <+> ppr theta
+                                   ,text "improved thetas" <+> ppr improved_thetas
++                                  ,text "can improve" <+> ppr canImprove
+                                   ])
+ 
+                         -- TODO: what if >1 matches?  should we try them all?
+hunk ./compiler/typecheck/Inst.lhs 1109
+-                        ; case tvMaps of 
+-                               [tvMap] -> do traceTc (text "MATT: Lookup Succeeded!")
+-                                             return $ Just tvMap
+-                               _ -> case choices of
+-                                         [_] -> return $ Just []
+-                                         _ -> return Nothing
+ 
+hunk ./compiler/typecheck/Inst.lhs 1110
+---                        ; lookupResult <- lookupPred force avails (inst:stack) predInst
+---                        ; case lookupResult of 
+---                               Just (_,tys') -> do {
+---                                 ; traceTc (text "Lookup Succeeded!" <+>
+---                                      vcat [text "inst tys" <+> (ppr $ (\(Dict {tci_pred = ClassP _ tys}) -> tys) predInst)
+---                                           ,text "pred tys" <+> ppr tys
+---                                           ,text "result tys" <+> ppr tys'
+---                                           ])
+---                                 ; return $ Just []
+---                                 }
+---                               Nothing -> return Nothing
++                        ; if canImprove 
++                             then case tvMaps of 
++                                       [tvMap] -> do traceTc (text "MATT: Lookup Succeeded!")
++                                                     return $ Just tvMap
++                                       _ -> case choices of
++                                                 [_] -> return $ Just []
++                                                 _ -> return Nothing
++                             else case choices of
++                                       [_] -> return $ Just []
++                                       _ -> return Nothing
++
+                       }
+ 
+ 
+hunk ./compiler/typecheck/Inst.lhs 1314
+   do insts' <- filterM (instMatchAvailP avails inst) insts
+      return (insts', unifs)
+ 
+-tcEqInstMatch (i1, _) (i2, _) 
+-  = case mkInstTypeMap i1 i2 of
+-    Nothing -> False
+-    (Just tvMap) -> tcEqTheta theta1 theta2
+-      where theta1 = mapTyVarsPreds tvMap $ instanceTheta i1
+-            theta2 = instanceTheta i2
++-- TODO: make sure TYPES are equal too!
++tcEqInstMatch (i1, t1) (i2, t2) 
++  | tcEqInstTypes t1 t2 && tcEqTypes (instanceTypes i1) (instanceTypes i2)
++    = case mkInstTypeMap i1 i2 of
++      Nothing -> False
++      (Just tvMap) -> tcEqTheta theta1 theta2
++        where theta1 = mapTyVarsPreds tvMap $ instanceTheta i1
++              theta2 = instanceTheta i2
++  | otherwise
++    = False
+ 
+ mapTyVarsToTypesInsts tvMap = map (mapTyVarsToTypesInst tvMap)
+ mapTyVarsToTypesInst tvMap inst@(Dict {tci_pred=pred}) = inst { tci_pred = mapTyVarsToTypesPred tvMap pred }
+hunk ./compiler/typecheck/Inst.lhs 1486
+         -- use it.  if tys has a type for a tyvar in instance, use that
+         ; constrained_unifs <- applyContextConstraints force inst avails stack inst_envs tys (unif_matches, [])
+         ; traceTc (text "MATT: CONSTRAINED UNIFS" <+> (ppr constrained_unifs))
+-        ; let best_unifs = bestInstMatches unif_matches
++        ; let best_unifs = bestInstMatches $ fst constrained_unifs
+         ; traceTc (text "MATT: BEST UNIFS" <+> (ppr best_unifs))
+         ; let best_unifs_possible = filter (flip isMostSpecificContext unif_matches) best_unifs
+         ; traceTc (text "MATT: BEST POSSIBLE" <+> (ppr best_unifs_possible))
+hunk ./compiler/typecheck/Inst.lhs 1491
+ 
++        ; let allTypes = 0 == countTyVars tys
++        ; let someTypes = 0 < countTyVars tys
++        ; let allVars = length tys == countTyVars tys
++
++        -- if there are better potential matches, delay deciding as long as possible.
++        -- if there are no type vars in the lookupPred, waiting won't help, so decide now
++        -- if force, decide now
++        ; let decide = allTypes || force
+ 
+ 
+hunk ./compiler/typecheck/Inst.lhs 1501
+-        ; let final' = if null best_matches 
+-                               then if force
++        ; let final' = if (null best_matches) && someTypes
++                               then if decide
+                                        then ((best_unifs)::([(Instance, [Either TyVar Type])]))
+                                        else ((best_unifs_possible)::([(Instance, [Either TyVar Type])]))
+hunk ./compiler/typecheck/Inst.lhs 1505
+-                               else if force 
++                               else if decide 
+                                        -- time to decide. pick the best match(es).
+                                        then best_matches
+                                        -- still have time to see if we get a better match.
+hunk ./compiler/typecheck/TcSimplify.lhs 2231
+ 	-- Works well for literals (1::Int) and constant dictionaries (d::Num Int)
+ 	-- Don't bother for implication constraints, which take real work
+     try_simple do_this_otherwise
+-      = do { res <- lookupSimpleInst force (availsInsts avails) wanted
++      = do { traceTc (text "MATT: calling lookupSimpleInst" <+> ppr avails)
++        ;res <- lookupSimpleInst force (availsInsts avails) wanted
+ 	   ; case res of
+ 	        GenInst [] rhs -> addWanted AddSCs avails wanted rhs []
+ 	        _              -> do_this_otherwise avails wanted }
+}
 
 Context:
 
@@ -2440,4 +2640,4 @@ Ian Lynagh <igloo@earth.li>**20100316005137
  Ignore-this: 234e3bc29e2f26cc59d7b03d780cc352
 ] 
 Patch bundle hash:
-790618f837e453a327825c7f45e719c01cf6acef
+e152a58f1b7cb15f2af23fbd742550571599bf00
