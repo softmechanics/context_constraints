@@ -48,6 +48,9 @@ Tue Mar 23 22:29:04 PDT 2010  matt@softmechanics.net
   * Context Constraints: Loop Detection
   Added some simple loop detection to the context constraints logic.  
 
+Tue Apr  6 13:25:30 PDT 2010  matt@softmechanics.net
+  * Context Constraints
+
 New patches:
 
 [Context Constraints
@@ -1821,6 +1824,564 @@ hunk ./compiler/typecheck/TcSimplify.lhs 2344
  \end{code}
  
 }
+[Context Constraints
+matt@softmechanics.net**20100406202530
+ Ignore-this: 7a71aea7a67987e659d122a6b42c4717
+] {
+hunk ./compiler/typecheck/Inst.lhs 915
+                            IOEnv (Env TcGblEnv TcLclEnv) ([(Instance,[Either TyVar Type])], [Instance])
+ applyContextConstraints _ _ _ _ _ _ x@([],_) = return x
+ applyContextConstraints force inst avails stack ies tys (ms,us) = 
+-  do ms' <- filterM matchesContext ms
++  do maybes <- mapM matchesContext ms
++     let ms' = mapMaybe id maybes
+      traceTc (text "MATT: applyContextConstraints" <+> 
+          vcat [text "tys" <+> ppr tys,
+                text "pred" <+> ppr inst,
+hunk ./compiler/typecheck/Inst.lhs 924
+                text "constrained" <+> ppr ms',
+                text "unifs" <+> ppr us])
+   
+-     return (bestInstMatches ms', us)
++     return (ms', us)
+   where
+hunk ./compiler/typecheck/Inst.lhs 926
+-    matchesContext (match_inst, match_tvs) = 
+-      do traceTc (text "MATT: matchesContext" <+>
+-            vcat [text "tys" <+> ppr tys
++    pop [] = []
++    pop (_:x) = x
++
++    matchesContext :: (Instance, [Either TyVar Type]) -> TcM (Maybe (Instance, [Either TyVar Type]))
++    matchesContext m@(match_inst, match_tvs) 
++      | not matches_tys = 
++        do {
++          ;traceTc (text "MATT: types don't merge" <+> 
++              vcat [text "tys" <+> ppr tys
++                   ,text "matchTys" <+> ppr (instanceTypes match_inst)
++                   ])
++          ;return Nothing
++        }
++      | otherwise = 
++        do {
++        ;(GenInst predInsts _) <- matchInst inst (instanceDFunId match_inst, match_tvs)
++        ;traceTc (text "MATT: matchesContext" <+>
++            vcat [text "inst" <+> ppr inst
++                 ,text "stack" <+> ppr stack
++                 ,text "tys" <+> ppr tys
++                 ,text "matchTys" <+> ppr (instanceTypes match_inst)
++                 ,text "matchTvs" <+> ppr match_tvs
++                 -- ,text "instanceTyVars" <+> ppr (instanceTyVars inst)
++                 ,text "match instanceTyVars" <+> ppr (instanceTyVars match_inst)
++                 ,text "merged tys" <+> ppr merged_tys
+                  ,text "match" <+> ppr match_inst
+hunk ./compiler/typecheck/Inst.lhs 952
+-                 ,text "theta'" <+> ppr theta'
++                 ,text "predInsts" <+> ppr predInsts
++                 ,text "theta tyVars" <+> ppr (tyVarsPreds theta)
+                  ])
+hunk ./compiler/typecheck/Inst.lhs 955
+-         (GenInst predInsts _) <- matchInst inst (instanceDFunId match_inst ,match_tvs)
+-         allM' $ map matchesPredInst predInsts
++        ; if improved tys match_inst
++              then do -- merging gave us more specific tys, so start over with these.
++                   -- reuse (instLoc inst) because I don't know how to make one for
++                   -- this new pred.  I believe it's the location of the use, not the def.
++                   merged_pred <- newDict (instLoc inst) $ ClassP (instanceClass match_inst) $ fromJust merged_tys 
++                   traceTc (text "MATT: types improved; restarting" <+> ppr merged_pred)
++
++                   looped <- isAvail stack merged_pred
++                   if looped then return Nothing
++                             else do r <- lookupPred force avails (merged_pred:pop stack) merged_pred
++                                     return $ case r of 
++                                                   Nothing -> Nothing
++                                                   Just (_, tys_tvs) -> Just (match_inst, tys_tvs)
++             else do -- let tvMap = map (\x->(x,TyVarTy x)) $ mapMaybe (either Just (\x -> Nothing)) match_tvs
++                     r <- matchPredLoop [] [] predInsts
++                     return $ if isJust r 
++                                 then Just m
++                                 else Nothing
++
++        }
+ 
+       where (_, theta, _, _) = instanceHead match_inst
+             (Instance { is_tvs = tpl_tvs, is_tys = tpl_tys }) = match_inst
+hunk ./compiler/typecheck/Inst.lhs 978
+-            (Just subst) = tcMatchTys tpl_tvs tpl_tys tys
+-            theta' = map (substPred subst) theta
+ 
+hunk ./compiler/typecheck/Inst.lhs 979
+-            matchesPredInst :: Inst -> TcM Bool
++            matchPredLoop :: [(TyVar,Type)] -> [Inst] -> [Inst] -> TcM (Maybe [(TyVar,Type)])
++            matchPredLoop tvMap [] []  = return $ Just tvMap
++            matchPredLoop _ faileds [] 
++              = do traceTc (text "MATT: matchPredLoop FAILED" <+> ppr faileds)
++                   return Nothing
++            matchPredLoop tvMap failedPreds (pred:preds) 
++              = do traceTc (text "MATT: matchPredLoop" <+>
++                      vcat [text "tvMap" <+> ppr tvMap
++                           ,text "pred" <+> ppr pred
++                           ,text "faileds" <+> ppr failedPreds
++                           ])
++                   r <- matchesPredInst pred
++                   
++                   -- returns a typemap if matching improved types
++                   case r of
++                        -- succeeded, but no tyVars were resolved
++                        Just [] -> matchPredLoop tvMap failedPreds preds
++
++                        -- succeeded with tyVars resolved!
++                        Just mapUpdate -> do let preds' = (mapTyVarsToTypesInsts mapUpdate $ preds ++ failedPreds)
++                                             traceTc (text "MATT: matching pred improved tyVars" <+>
++                                                vcat [text "pred" <+> ppr pred
++                                                     ,text "improved" <+> ppr mapUpdate
++                                                     ,text "todo" <+> ppr preds
++                                                     ,text "faileds" <+> ppr failedPreds
++                                                     ,text "todo'" <+> ppr preds'
++                                                     ])
++                                             -- retry faileds with improvement
++                                             matchPredLoop tvMap [] preds'
++                        Nothing -> matchPredLoop tvMap (pred:failedPreds) preds
++
++            mkThetaTyMap :: Inst -> PredType -> (Inst,[(Type,Type)])
++            mkThetaTyMap inst pred = (inst, zip (predTys pred) (dictTys inst))
++            predTys (ClassP _ tys) = tys
++            dictTys (Dict {tci_pred = pred}) = predTys pred
++
++            matches_tys | isJust $ merged_tys = True
++                        | otherwise = False
++            improved tys inst' = 
++              case merge_tys tys inst' of
++                   Just tys' -> (countTyVars tys') < (countTyVars tys)
++                   Nothing   -> False
++
++            merge_tys tys inst' = mergeTys tys (instanceTypes inst')
++            merged_tys = merge_tys tys match_inst
++
++            -- replace ty vars in match with ty var parameters (which we may have some preds for)
++            match_tvs' = map lookupTyVar match_tvs
++              where tvMap = mkTvMap $ zip (instanceTypes match_inst) tys
++                    lookupTyVar (Left tv) = 
++                        case tvLookupByName tv tvMap of
++                             Just (TyVarTy tv') -> Left tv'
++                             Just ty -> Right ty  -- is this right? maybe just keep tv
++                             Nothing -> Left tv
++
++                    lookupTyVar (Right ty@(TyVarTy tv)) = Right $ fromMaybe ty (tvLookupByName tv tvMap)
++                    lookupTyVar (Right ty) = Right ty
++
++            -- some pred (fundep) resolved a var!  update any references to that var elsewhere in the theta
++            improve_theta :: [(TyVar,Type)] -> [PredType] 
++            improve_theta tvMap = mapTyVarsToTypesPreds tvMap theta
++
++            mkTvMap :: [(Type,Type)] -> [(TyVar,Type)]
++            mkTvMap = mapMaybe toTvMapElem
++            toTvMapElem (TyVarTy tv, ty) = Just (tv,ty)
++            toTvMapElem _ = Nothing
++
++
++            -- TODO: if one pred improves the types (fundeps), then apply that improvement
++            -- to all preds
++            matchesPredInst :: Inst -> TcM (Maybe [(TyVar,Type)])
+             matchesPredInst predInst =
+               do traceTc (text "MATT: matchesPredInst" <+>
+                     vcat [text "inst" <+> ppr inst
+hunk ./compiler/typecheck/Inst.lhs 1053
++                         ,text "match_tvs" <+> ppr match_tvs
++                         ,text "tys" <+> ppr tys
+                          ,text "pred" <+> ppr predInst
+hunk ./compiler/typecheck/Inst.lhs 1056
++                         ,text "predTys" <+> ppr (dictTys predInst)
+                          ])
+ 
+hunk ./compiler/typecheck/Inst.lhs 1059
+-                 allM' [ liftM not $ isAvail stack predInst
+-                      , anyM' [ isAvail avails predInst
+-                             , liftM isJust $ lookupPred force avails (inst:stack) predInst
+-                             ]
+-                      ]
++                 avail <- isAvail avails predInst
++                 if avail
++                    then return $ Just []
++                    else do looped <- isAvail stack predInst
++                            if looped 
++                               then return Nothing
++                               else lookup
++              where lookup
++                      = do {
++                        ; choices <- lookupPredChoices force avails (inst:stack) predInst
++                        ; let choices_params = (map (instanceTypes.fst) choices)
++                        ; let pred_tys = dictTys predInst
++                        ; let merged_params = mapMaybe (mergeTys pred_tys) choices_params
++                        ; let improved_params = filter (\p -> (countTyVars p) < (countTyVars pred_tys)) merged_params
++                        ; let tvMaps = map (mkTvMap . zip pred_tys) improved_params
++                        ; let improved_thetas = map improve_theta tvMaps
++                        ; traceTc (text "MATT: Lookup Choices" <+>
++                             vcat [text "inst" <+> ppr inst
++                                  ,text "match_tvs" <+> ppr match_tvs
++                                  ,text "tys" <+> ppr tys
++                                  ,text "pred" <+> ppr predInst
++                                  ,text "pred tys" <+> ppr pred_tys
++                                  ,text "choices" <+> ppr choices
++                                  ,text "choices parameterizations" <+> ppr choices_params
++                                  ,text "merged parameterizations" <+> ppr merged_params
++                                  ,text "improved parameterizations" <+> ppr improved_params
++                                  ,text "tvMaps" <+> ppr tvMaps
++                                  ,text "theta" <+> ppr theta
++                                  ,text "improved thetas" <+> ppr improved_thetas
++                                  ])
++
++                        -- TODO: what if >1 matches?  should we try them all?
++                        ; case tvMaps of 
++                               [tvMap] -> do traceTc (text "MATT: Lookup Succeeded!")
++                                             return $ Just tvMap
++                               _ -> case choices of
++                                         [_] -> return $ Just []
++                                         _ -> return Nothing
++
++--                        ; lookupResult <- lookupPred force avails (inst:stack) predInst
++--                        ; case lookupResult of 
++--                               Just (_,tys') -> do {
++--                                 ; traceTc (text "Lookup Succeeded!" <+>
++--                                      vcat [text "inst tys" <+> (ppr $ (\(Dict {tci_pred = ClassP _ tys}) -> tys) predInst)
++--                                           ,text "pred tys" <+> ppr tys
++--                                           ,text "result tys" <+> ppr tys'
++--                                           ])
++--                                 ; return $ Just []
++--                                 }
++--                               Nothing -> return Nothing
++                      }
++
++
++countTyVars :: [Type] -> Int
++countTyVars tys = 
++  sum $ map count tys
++  where count :: Type -> Int
++        count (TyVarTy _) = 1
++        count (AppTy ty1 ty2) = (count ty1) + (count ty2)
++        count (TyConApp _ tys') = countTyVars tys'
++        count (FunTy ty1 ty2) = (count ty1) + (count ty2)
++
++mergeTys :: [Type] -> [Type] -> Maybe [Type]
++mergeTys tys1 tys2 = allMaybes' $ zipWith pickTy tys1 tys2
++  where
++    allMaybes' :: [Maybe Type] -> Maybe [Type]
++    allMaybes' ts | all isJust ts = Just $ map fromJust ts
++                  | otherwise = Nothing
++    allMaybes :: Maybe Type -> Maybe [Type] -> Maybe [Type]
++    allMaybes Nothing Nothing = Nothing
++    allMaybes Nothing _ = Nothing
++    allMaybes _ Nothing = Nothing
++    allMaybe (Just t) (Just ts) = Just (t:ts)
++
++    pickTy tv@(TyVarTy _) (TyVarTy _) = Just tv
++    pickTy (TyVarTy _) ty = Just ty
++    pickTy ty (TyVarTy _) = Just ty
++    pickTy ty1 ty2 | tcEqType ty1 ty2 = Just ty1
++    pickTy (TyConApp con tys1) (TyConApp _ tys2) =
++      -- assume cons are ==
++      case mergeTys tys1 tys2 of
++           Just tys -> Just $ TyConApp con tys
++           Nothing  -> Nothing
++    pickTy _ _ = Nothing
++
++--mergeTys :: [Either TyVar TcType] -> [Either TyVar TcType] -> [Either TyVar TcType]
++--mergeTys [] [] = []
++--mergeTys ((Left _):l1) ((r@(Right _)):l2) = r:(mergeTys l1 l2)
++-- always keep tyvars from first list
++--mergeTys ((r@(Right _)):l1) ((Left _):l2) = r:(mergeTys l1 l2)
++--mergeTys (tv@(Left _):l1) ((Left _):l2) 
++--  = tv : (mergeTys l1 l2)
++--mergeTys (ty@(Right _):l1) ((Right _):l2) = ty : mergeTys l1 l2
+ 
+ matchInst :: Inst -> (DFunId, [Either TyVar TcType]) -> TcM LookupInstResult
+ matchInst (Dict {tci_pred=pred, tci_loc=loc}) (dfun_id, mb_inst_tys) = do
+hunk ./compiler/typecheck/Inst.lhs 1165
+ 	-- (presumably there's a functional dependency in class C)
+ 	-- Hence mb_inst_tys :: Either TyVar TcType 
+ 
+-    ; let inst_tv (Left tv)  = do { tv' <- tcInstTyVar tv; return (mkTyVarTy tv') }
+-	  inst_tv (Right ty) = return ty
+-    ; tys <- mapM inst_tv mb_inst_tys
++--    ; let inst_tv (Left tv)  = do { tv' <- tcInstTyVar tv; return (mkTyVarTy tv') }
++--	  inst_tv (Right ty) = return ty
++--    ; tys <- mapM inst_tv mb_inst_tys
++      ; let toType (Left tv) = mkTyVarTy tv
++            toType (Right ty) = ty
++      ; let  tys = map toType mb_inst_tys
+     ; let
+     	(theta, _) = tcSplitPhiTy (applyTys (idType dfun_id) tys)
+ 	src_loc	   = instLocSpan loc
+hunk ./compiler/typecheck/Inst.lhs 1260
+ instanceTheta = (\(_,x,_,_) -> x) . instanceHead 
+ instanceTyVars :: Instance -> [TyVar]
+ instanceTyVars = (\(x,_,_,_) -> x) . instanceHead
++instanceTypes :: Instance -> [Type]
++instanceTypes = (\(_,_,_,x) -> x) . instanceHead
++instanceClass :: Instance -> Class
++instanceClass = (\(_,_,x,_) -> x) . instanceHead
+ 
+ isMostSpecificContext :: (Instance, [Either TyVar Type])
+                       -> [(Instance, [Either TyVar Type])]
+hunk ./compiler/typecheck/Inst.lhs 1293
+ eqVarNamesType (TyConApp c1 tys1) (TyConApp c2 tys2) = c1 == c2 && tys1 `eqVarNamesTypes` tys2
+ eqVarNamesType (FunTy f1 a1) (FunTy f2 a2) = f1 `eqVarNamesType` f2 && a1 `eqVarNamesType` a2
+ eqVarNamesType (ForAllTy tv1 ty1) (ForAllTy tv2 ty2) = tv1 `eqVarNamesVar` tv2 && ty1 `eqVarNamesType` ty2
++eqVarNamesType (PredTy p1) (PredTy p2) = p1 `eqVarNamesPred` p2
++eqVarNamesType _ _ = False
+ 
+ eqVarNamesVar x y = (getName x) == (getName y)
+ 
+hunk ./compiler/typecheck/Inst.lhs 1309
+       where theta1 = mapTyVarsPreds tvMap $ instanceTheta i1
+             theta2 = instanceTheta i2
+ 
++mapTyVarsToTypesInsts tvMap = map (mapTyVarsToTypesInst tvMap)
++mapTyVarsToTypesInst tvMap inst@(Dict {tci_pred=pred}) = inst { tci_pred = mapTyVarsToTypesPred tvMap pred }
++
++mapTyVarsToTypesPreds tvMap = map (mapTyVarsToTypesPred tvMap) 
++mapTyVarsToTypesPred tvMap (ClassP cls tys) = ClassP cls $ mapTyVarsToTypesTypes tvMap tys
++
++mapTyVarsToTypesTypes :: [(TyVar,Type)] -> [Type] -> [Type]
++mapTyVarsToTypesTypes tvMap tys = map (mapTyVarsToTypesType tvMap) tys
++
++mapTyVarsToTypesType :: [(TyVar,Type)] -> Type -> Type
++mapTyVarsToTypesType tvMap (TyVarTy tv) = mapTyVarType tvMap tv
++mapTyVarsToTypesType tvMap (AppTy ty1 ty2) = AppTy (mapTyVarsToTypesType tvMap ty1) (mapTyVarsToTypesType tvMap ty2)
++mapTyVarsToTypesType tvMap (TyConApp tc tys) = TyConApp tc $ mapTyVarsToTypesTypes tvMap tys
++mapTyVarsToTypesType tvMap (FunTy ty1 ty2) = FunTy (mapTyVarsToTypesType tvMap ty1) (mapTyVarsToTypesType tvMap ty2)
++--mapTyVarsToTypesType tvMap (ForAllTy tv ty) = ForAllTy (mapTyVar tvMap tv) (mapTyVarsToTypesType tvMap ty)
++mapTyVarsToTypesType tvMap (PredTy pred) = PredTy $ mapTyVarsToTypesPred tvMap pred
++
++mapTyVarType :: [(TyVar, Type)] -> TyVar -> Type
++mapTyVarType tvMap tv = fromMaybe (TyVarTy tv) $ tvLookupByName tv tvMap 
++
++updateTvMap :: [(TyVar, a)] -> [(TyVar, a)] -> [(TyVar, a)]
++updateTvMap tvMap updates
++  = foldr update tvMap updates
++  where update up@(v1,val) (e@(v2,_):elems) 
++               | v1 `eqVarNamesVar` v2 = (v1,val):elems
++               | otherwise = e:(update up elems)
++
++
+ mapTyVarsPreds tvMap = map (mapTyVarsPred tvMap) 
+ mapTyVarsPred tvMap (ClassP cls tys) = ClassP cls $ mapTyVarsTypes tvMap tys
+ 
+hunk ./compiler/typecheck/Inst.lhs 1350
+ mapTyVarsType tvMap (ForAllTy tv ty) = ForAllTy (mapTyVar tvMap tv) (mapTyVarsType tvMap ty)
+ mapTyVarsType tvMap (PredTy pred) = PredTy $ mapTyVarsPred tvMap pred
+ 
++tyVarsTypes :: [Type] -> [TyVar]
++tyVarsTypes tys = tvUnique $ foldr (++) [] $ map tyVarsType tys
++
++tvUnique :: [TyVar] -> [TyVar]
++tvUnique [] = []
++tvUnique (v:vs) | isJust $ find (eqVarNamesVar v) vs = tvUnique vs
++              | otherwise = v:(tvUnique vs)
++
++tyVarsType :: Type -> [TyVar]
++tyVarsType (TyVarTy tv) = [tv]
++tyVarsType (AppTy ty1 ty2) = tyVarsTypes [ty1,ty2]
++tyVarsType (TyConApp _ tys) = tyVarsTypes tys
++tyVarsType (FunTy ty1 ty2) = tyVarsTypes [ty1,ty2]
++tyVarsType (PredTy pred) = tyVarsPred pred
++
++tyVarsPreds preds = tyVarsTypes $ foldr (++) [] $ map (\(ClassP _ tys) -> tys) preds
++
++tyVarsPred :: PredType -> [TyVar]
++tyVarsPred (ClassP _ tys) = tyVarsTypes tys
++
++
++tvLookupByName :: TyVar -> [(TyVar, a)] -> Maybe a
++tvLookupByName tv1 tvMap = find (\(tv2,_) -> eqVarNamesVar tv1 tv2) tvMap >>= Just . snd
++
++tyVarsToTypes :: [(TyVar, Type)] -> Type -> Type
++tyVarsToTypes tvMap ty@(TyVarTy tv)
++  = case tvLookupByName tv tvMap of
++         Nothing  -> ty
++         Just ty' -> ty'
++tyVarsToTypes tvMap (AppTy ty1 ty2) = AppTy (tyVarsToTypes tvMap ty1) (tyVarsToTypes tvMap ty2)
++tyVarsToTypes tvMap (TyConApp tc tys) = TyConApp tc $ map (tyVarsToTypes tvMap) tys
++tyVarsToTypes tvMap (FunTy ty1 ty2) = FunTy (tyVarsToTypes tvMap ty1) (tyVarsToTypes tvMap ty2)
++tyVarsToTypes tvMap (ForAllTy tv ty) = undefined
++tyVarsToTypes tvMap (PredTy pred) = PredTy $ tyVarsToTypesPred tvMap pred
++
++tyVarsToTypesPred :: [(TyVar, Type)] -> PredType -> PredType
++tyVarsToTypesPred tvMap (ClassP cls tys) = ClassP cls $ map (tyVarsToTypes tvMap) tys
++
+ mapTyVar :: [(TyVar, TyVar)] -> TyVar -> TyVar
+hunk ./compiler/typecheck/Inst.lhs 1389
+-mapTyVar tvMap tv 
+-  = case lookup' tv of
+-    Just tv' -> tv'
+-    Nothing  -> tv
+-  where lookup' tv1 = find (\(tv2,_) -> eqVarNamesVar tv1 tv2) tvMap >>= Just . snd
++mapTyVar tvMap tv = fromMaybe tv $ tvLookupByName tv tvMap 
+ 
+ mkInstTypeMap :: Instance -> Instance -> Maybe [(TyVar, TyVar)]
+ mkInstTypeMap i1 i2
+hunk ./compiler/typecheck/Inst.lhs 1419
+   | otherwise     = a:(removeDuplicates as)
+   where isDuplicate a = isJust $ find (tcEqInstMatch a) as 
+ 
++-- lookupUnif :: Instance -> [(Instance, [Either TyVar TcType])]
++lookupUnif inst_envs unif = 
++  lookupInstEnv inst_envs cls tys
++  -- return found
++  where tys = instanceTypes unif
++        cls = instanceClass unif
++        -- ([found],[]) = lookupInstEnv inst_envs cls tys
++
++lookupPredChoices :: Bool -> [Inst] -> [Inst] -> Inst -> TcM [(Instance, [Either TyVar TcType])]
++lookupPredChoices force avails stack inst@(Dict {tci_pred = pred@(ClassP clas tys)})
++  = do { ; eps     <- getEps
++        ; tcg_env <- getGblEnv
++        ; let inst_envs = (eps_inst_env eps, tcg_inst_env tcg_env)
++        ; let insts = lookupInstEnv inst_envs clas tys 
++        ; traceTc (text "MATT: STACK" <+> ppr stack)
++        ; let inst_matches = fst insts
++        ; ASSERT( and $ map ((\x -> tcEqInstTypes x x).snd) inst_matches)
++
++        -- TODO: check for ContextConstraints flag
++        case force of
++            True -> traceTc (text "MATT: LOOKUP (FORCE)" <+> ppr pred)
++            False -> traceTc (text "MATT: LOOKUP" <+> ppr pred)
++        ; traceTc (text "MATT: MATCHES" <+> ppr inst_matches)
++        ; constrained <- applyContextConstraints force inst avails stack inst_envs tys insts 
++        ; traceTc (text "MATT: CONSTRAINED" <+> ppr constrained)
++        ; avail_insts <- checkAvail avails inst insts
++        ; traceTc (text "MATT: AVAIL INSTS" <+> (ppr avail_insts))
++        ; let best_avail = (\(x,y) -> (bestInstMatches x, y)) avail_insts
++        ; traceTc (text "MATT: BEST AVAIL INSTS" <+> (ppr best_avail))
++        ; let both_dupes = (\(x1,y1) (x2,y2) -> ((x1++x2),y1++y2)) avail_insts constrained
++        ; traceTc (text "MATT: BOTH WORLDS WITH DUPES" <+> (ppr both_dupes))
++        ; let both = (\(x1,y1) (x2,y2) -> (removeDuplicates (x1++x2), (y1++y2))) avail_insts constrained
++        ; traceTc (text "MATT: BOTH WORLDS" <+> (ppr both))
++        ; let best_both = (\(x,y) -> (bestInstMatches x, y)) both
++        ; traceTc (text "MATT: BEST OF BOTH WORLDS" <+> (ppr best_both))
++        ; let (best_matches, best_unifs) = best_both
++        ; let best_possible = filter (flip isMostSpecificContext inst_matches) best_matches
++        ; traceTc (text "MATT: BEST POSSIBLE" <+> (ppr best_possible))
++
++        -- TODO: if adopting a unif, make sure the type corresponding to each typevar we're
++        -- looking for matches the known contexts.  That should help constrain multiple
++        -- unifs as well
++        ; let all_unifs = map (lookupUnif inst_envs) best_unifs
++        ; traceTc (text "MATT: ALL UNIFS" <+> (ppr all_unifs))
++        ; let unif_matches = removeDuplicates $ foldr (++) [] $ map fst all_unifs 
++        ; traceTc (text "MATT: UNIF MATCHES" <+> (ppr unif_matches))
++
++        -- TODO: to constrain unifs, merge tys with instance tys (if instance has a type for a tyvar in tys,
++        -- use it.  if tys has a type for a tyvar in instance, use that
++        ; constrained_unifs <- applyContextConstraints force inst avails stack inst_envs tys (unif_matches, [])
++        ; traceTc (text "MATT: CONSTRAINED UNIFS" <+> (ppr constrained_unifs))
++        ; let best_unifs = bestInstMatches unif_matches
++        ; traceTc (text "MATT: BEST UNIFS" <+> (ppr best_unifs))
++        ; let best_unifs_possible = filter (flip isMostSpecificContext unif_matches) best_unifs
++        ; traceTc (text "MATT: BEST POSSIBLE" <+> (ppr best_unifs_possible))
++
++
++
++        ; let final' = if null best_matches 
++                               then if force
++                                       then ((best_unifs)::([(Instance, [Either TyVar Type])]))
++                                       else ((best_unifs_possible)::([(Instance, [Either TyVar Type])]))
++                               else if force 
++                                       -- time to decide. pick the best match(es).
++                                       then best_matches
++                                       -- still have time to see if we get a better match.
++                                       -- if there is no better match, can decide now
++                                       else best_possible
++        ; case force of
++            True -> traceTc (text "MATT: LOOKUP DONE (FORCE)" <+> 
++                        vcat [text "pred" <+> ppr pred,
++                              text "final" <+> ppr final'])
++            False -> traceTc (text "MATT: LOOKUP DONE" <+> 
++                        vcat [text "pred" <+> ppr pred,
++                              text "final" <+> ppr final'])
++        ; traceTc (text "MATT: DONE: " <+> (ppr final'))
++        ; return final'
++      }
++
+ lookupPred :: Bool -> [Inst] -> [Inst] -> Inst -> TcM (Maybe (DFunId, [Either TyVar TcType]))
+ -- Look up a class constraint in the instance environment
+ lookupPred force avails stack inst@(Dict {tci_pred = pred@(ClassP clas tys)})
+hunk ./compiler/typecheck/Inst.lhs 1501
+-  = do	{ ; eps     <- getEps
+-	; tcg_env <- getGblEnv
+-	; let inst_envs = (eps_inst_env eps, tcg_inst_env tcg_env)
+-	; let insts = lookupInstEnv inst_envs clas tys 
+-  ; let inst_matches = fst insts
+-  ; ASSERT( and $ map ((\x -> tcEqInstTypes x x).snd) inst_matches)
+-
+-	-- TODO: check for ContextConstraints flag
+-  case force of
+-      True -> traceTc (text "MATT: LOOKUP (FORCE)" <+> ppr pred)
+-      False -> traceTc (text "MATT: LOOKUP" <+> ppr pred)
+-  ; traceTc (text "MATT: MATCHES" <+> ppr inst_matches)
+-	; constrained <- applyContextConstraints force inst avails stack inst_envs tys insts 
+-  ; traceTc (text "MATT: CONSTRAINED" <+> ppr constrained)
+-  ; avail_insts <- checkAvail avails inst insts
+-  ; traceTc (text "MATT: AVAIL INSTS" <+> (ppr avail_insts))
+-  ; let best_avail = (\(x,y) -> (bestInstMatches x, y)) avail_insts
+-  ; traceTc (text "MATT: BEST AVAIL INSTS" <+> (ppr best_avail))
+-  ; let both_dupes = (\(x1,y1) (x2,y2) -> ((x1++x2),y1++y2)) avail_insts constrained
+-  ; traceTc (text "MATT: BOTH WORLDS WITH DUPES" <+> (ppr both_dupes))
+-  ; let both = (\(x1,y1) (x2,y2) -> (removeDuplicates (x1++x2), (y1++y2))) avail_insts constrained
+-  ; traceTc (text "MATT: BOTH WORLDS" <+> (ppr both))
+-  ; let best_both = (\(x,y) -> (bestInstMatches x, y)) both
+-  ; traceTc (text "MATT: BEST OF BOTH WORLDS" <+> (ppr best_both))
+-  ; let (best_matches, _) = best_both
+-  ; let best_possible = filter (flip isMostSpecificContext inst_matches) best_matches
+-  ; traceTc (text "MATT: BEST POSSIBLE" <+> (ppr best_possible))
++  = do	{ 
+   ; enabled <- contextConstraintsEnabled
+hunk ./compiler/typecheck/Inst.lhs 1503
+-  ; let final = case enabled of
+-                      False -> insts
+-                      True -> case force of
+-                                  -- time to decide. pick the best match(es).
+-                                  True -> (fst best_both, [])
+-
+-                                  -- still have time to see if we get a better match.
+-                                  -- if there is no better match, can decide now
+-                                  False -> (best_possible, []) 
+-
+-  ; case force of
+-      True -> traceTc (text "MATT: LOOKUP DONE (FORCE)" <+> 
+-                  vcat [text "pred" <+> ppr pred,
+-                        text "final" <+> ppr final])
+-      False -> traceTc (text "MATT: LOOKUP DONE" <+> 
+-                  vcat [text "pred" <+> ppr pred,
+-                        text "final" <+> ppr final])
+-  ; traceTc (text "MATT: DONE: " <+> (ppr final))
++  ; final <- if not enabled 
++      then do {
++        ; eps     <- getEps
++        ; tcg_env <- getGblEnv
++        ; let inst_envs = (eps_inst_env eps, tcg_inst_env tcg_env)
++        ; return $ lookupInstEnv inst_envs clas tys
++      }
++      else do {
++        ; choices <- lookupPredChoices force avails stack inst
++        ; return (choices, [])
++      }
+ 	; case final of {
+ 	    ([(ispec, inst_tys)], []) 
+ 		-> do	{ let dfun_id = is_dfun ispec
+hunk ./compiler/typecheck/Inst.lhs 1522
+ 				         text "witness" <+> ppr dfun_id
+ 					 <+> ppr (idType dfun_id) ])
+ 				-- Record that this dfun is needed
+-			; record_dfun_usage dfun_id
++        -- only if at the top level.  otherwise, we just checking a dependency.
++        -- we may not need it, i.e. not all deps met, better match is found
++			; if (null stack) then record_dfun_usage dfun_id
++          else return ()
+ 			; return (Just (dfun_id, inst_tys)) } ;
+ 
+      	    (matches, unifs)
+}
 
 Context:
 
@@ -1879,4 +2440,4 @@ Ian Lynagh <igloo@earth.li>**20100316005137
  Ignore-this: 234e3bc29e2f26cc59d7b03d780cc352
 ] 
 Patch bundle hash:
-6f939c7461821344dd71ca7dd96dfc11119361de
+790618f837e453a327825c7f45e719c01cf6acef
