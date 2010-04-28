@@ -62,6 +62,9 @@ Wed Apr  7 11:59:59 PDT 2010  matt@softmechanics.net
      parameters for the instance use under consideration.
   
 
+Wed Apr 28 10:13:54 PDT 2010  matt@softmechanics.net
+  * better handling of parametric types, i.e. (m a) in instance head
+
 New patches:
 
 [Context Constraints
@@ -2582,6 +2585,88 @@ hunk ./compiler/typecheck/TcSimplify.lhs 2231
  	        GenInst [] rhs -> addWanted AddSCs avails wanted rhs []
  	        _              -> do_this_otherwise avails wanted }
 }
+[better handling of parametric types, i.e. (m a) in instance head
+matt@softmechanics.net**20100428171354
+ Ignore-this: d8c746f99a3834f8a5a7ec4b66f64f8a
+] {
+hunk ./compiler/typecheck/Inst.lhs 936
+         do {
+           ;traceTc (text "MATT: types don't merge" <+> 
+               vcat [text "tys" <+> ppr tys
++                   ,text ("tys struct: " ++ (show $ map tyStruct tys))
+                    ,text "matchTys" <+> ppr (instanceTypes match_inst)
+hunk ./compiler/typecheck/Inst.lhs 938
++                   ,text ("matchTys struct: " ++ (show $ map tyStruct (instanceTypes match_inst)))
+                    ])
+           ;return Nothing
+         }
+hunk ./compiler/typecheck/Inst.lhs 1031
+             dictTys (Dict {tci_pred = pred}) = predTys pred
+ 
+             matches_tys | isJust $ merged_tys = True
++                        | isJust ((sequence $ map (either (const Nothing) Just) match_tvs) >>= mergeTys tys) = True
+                         | otherwise = False
+             improved tys inst' = 
+               case merge_tys tys inst' of
+hunk ./compiler/typecheck/Inst.lhs 1136
+         count (TyConApp _ tys') = countTyVars tys'
+         count (FunTy ty1 ty2) = (count ty1) + (count ty2)
+ 
++tyStruct :: Type -> [Char]
++tyStruct (TyVarTy _) = "TyVarTy"
++tyStruct (TyConApp _ tys) = "(TyConApp ? " ++ (show $ map tyStruct tys) ++ ")"
++tyStruct (AppTy l r) = "(AppTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
++tyStruct (FunTy l r) = "(FunTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
++
+ mergeTys :: [Type] -> [Type] -> Maybe [Type]
+hunk ./compiler/typecheck/Inst.lhs 1143
+-mergeTys tys1 tys2 = allMaybes' $ zipWith pickTy tys1 tys2
++mergeTys tys1 tys2 = sequence $ zipWith pickTy tys1 tys2
+   where
+hunk ./compiler/typecheck/Inst.lhs 1145
+-    allMaybes' :: [Maybe Type] -> Maybe [Type]
+-    allMaybes' ts | all isJust ts = Just $ map fromJust ts
+-                  | otherwise = Nothing
+-    allMaybes :: Maybe Type -> Maybe [Type] -> Maybe [Type]
+-    allMaybes Nothing Nothing = Nothing
+-    allMaybes Nothing _ = Nothing
+-    allMaybes _ Nothing = Nothing
+-    allMaybe (Just t) (Just ts) = Just (t:ts)
+-
+     pickTy tv@(TyVarTy _) (TyVarTy _) = Just tv
+     pickTy (TyVarTy _) ty = Just ty
+     pickTy ty (TyVarTy _) = Just ty
+hunk ./compiler/typecheck/Inst.lhs 1151
+     pickTy ty1 ty2 | tcEqType ty1 ty2 = Just ty1
+     pickTy (TyConApp con tys1) (TyConApp _ tys2) =
+       -- assume cons are ==
+-      case mergeTys tys1 tys2 of
+-           Just tys -> Just $ TyConApp con tys
+-           Nothing  -> Nothing
++      mergeTys tys1 tys2 >>= \tys -> return $ TyConApp con tys
++    pickTy (AppTy l1 r1) (AppTy l2 r2) =
++      do l <- pickTy l1 l2
++         r <- pickTy r1 r2
++         return $ AppTy l r
++    pickTy (FunTy l1 r1) (FunTy l2 r2) =
++      do l <- pickTy l1 l2
++         r <- pickTy r1 r2
++         return $ FunTy l r
+     pickTy _ _ = Nothing
+ 
+hunk ./compiler/typecheck/Inst.lhs 1162
+---mergeTys :: [Either TyVar TcType] -> [Either TyVar TcType] -> [Either TyVar TcType]
+---mergeTys [] [] = []
+---mergeTys ((Left _):l1) ((r@(Right _)):l2) = r:(mergeTys l1 l2)
+--- always keep tyvars from first list
+---mergeTys ((r@(Right _)):l1) ((Left _):l2) = r:(mergeTys l1 l2)
+---mergeTys (tv@(Left _):l1) ((Left _):l2) 
+---  = tv : (mergeTys l1 l2)
+---mergeTys (ty@(Right _):l1) ((Right _):l2) = ty : mergeTys l1 l2
+ 
+ matchInst :: Inst -> (DFunId, [Either TyVar TcType]) -> TcM LookupInstResult
+ matchInst (Dict {tci_pred=pred, tci_loc=loc}) (dfun_id, mb_inst_tys) = do
+}
 
 Context:
 
@@ -2640,4 +2725,4 @@ Ian Lynagh <igloo@earth.li>**20100316005137
  Ignore-this: 234e3bc29e2f26cc59d7b03d780cc352
 ] 
 Patch bundle hash:
-e152a58f1b7cb15f2af23fbd742550571599bf00
+15e66caa8e5cb24da970eb7d167c5d4c15d311d0
