@@ -19,3 +19,10 @@ main = do testAction
 
           print $ test 'a'
 
+{- OUTPUT
+"Char"
+"Override"
+"Char"
+"Override"
+"Override"
+-}
