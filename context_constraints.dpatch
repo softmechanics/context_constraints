@@ -65,6 +65,9 @@ Wed Apr  7 11:59:59 PDT 2010  matt@softmechanics.net
 Wed Apr 28 10:13:54 PDT 2010  matt@softmechanics.net
   * better handling of parametric types, i.e. (m a) in instance head
 
+Thu Apr 29 17:10:57 PDT 2010  matt@softmechanics.net
+  * improved type merging and improvement detection
+
 New patches:
 
 [Context Constraints
@@ -2667,6 +2670,215 @@ hunk ./compiler/typecheck/Inst.lhs 1162
  matchInst :: Inst -> (DFunId, [Either TyVar TcType]) -> TcM LookupInstResult
  matchInst (Dict {tci_pred=pred, tci_loc=loc}) (dfun_id, mb_inst_tys) = do
 }
+[improved type merging and improvement detection
+matt@softmechanics.net**20100430001057
+ Ignore-this: b87837efc10d766c7215da6337ce662a
+] {
+hunk ./compiler/typecheck/Inst.lhs 931
+     pop (_:x) = x
+ 
+     matchesContext :: (Instance, [Either TyVar Type]) -> TcM (Maybe (Instance, [Either TyVar Type]))
+-    matchesContext m@(match_inst, match_tvs) 
+-      | not matches_tys = 
+-        do {
+-          ;traceTc (text "MATT: types don't merge" <+> 
+-              vcat [text "tys" <+> ppr tys
+-                   ,text ("tys struct: " ++ (show $ map tyStruct tys))
+-                   ,text "matchTys" <+> ppr (instanceTypes match_inst)
+-                   ,text ("matchTys struct: " ++ (show $ map tyStruct (instanceTypes match_inst)))
+-                   ])
+-          ;return Nothing
+-        }
+-      | otherwise = 
++    matchesContext m@(match_inst, match_tvs) =
+         do {
+         ;(GenInst predInsts _) <- matchInst inst (instanceDFunId match_inst, match_tvs)
+         ;traceTc (text "MATT: matchesContext" <+>
+hunk ./compiler/typecheck/Inst.lhs 938
+             vcat [text "inst" <+> ppr inst
+                  ,text "stack" <+> ppr stack
+                  ,text "tys" <+> ppr tys
++                 ,text ("tys struct: " ++ (unwords $ map tyStruct tys))
+                  ,text "matchTys" <+> ppr (instanceTypes match_inst)
+hunk ./compiler/typecheck/Inst.lhs 940
++                 ,text ("matchTys struct: " ++ (unwords $ map tyStruct (instanceTypes match_inst)))
+                  ,text "matchTvs" <+> ppr match_tvs
+hunk ./compiler/typecheck/Inst.lhs 942
+-                 -- ,text "instanceTyVars" <+> ppr (instanceTyVars inst)
+                  ,text "match instanceTyVars" <+> ppr (instanceTyVars match_inst)
+hunk ./compiler/typecheck/Inst.lhs 943
+-                 ,text "merged tys" <+> ppr merged_tys
++                 ,text "merged_tys" <+> ppr merged_tys
++                 ,text ("merged_tys: " ++ (unwords $ map tyStruct merged_tys))
+                  ,text "match" <+> ppr match_inst
+                  ,text "predInsts" <+> ppr predInsts
+                  ,text "theta tyVars" <+> ppr (tyVarsPreds theta)
+hunk ./compiler/typecheck/Inst.lhs 949
+                  ])
+-        ; if improved tys match_inst
++        ; if improved tys merged_tys
+               then do -- merging gave us more specific tys, so start over with these.
+                    -- reuse (instLoc inst) because I don't know how to make one for
+                    -- this new pred.  I believe it's the location of the use, not the def.
+hunk ./compiler/typecheck/Inst.lhs 953
+-                   merged_pred <- newDict (instLoc inst) $ ClassP (instanceClass match_inst) $ fromJust merged_tys 
++                   merged_pred <- newDict (instLoc inst) $ ClassP (instanceClass match_inst) merged_tys 
+                    traceTc (text "MATT: types improved; restarting" <+> ppr merged_pred)
+ 
+                    looped <- isAvail stack merged_pred
+hunk ./compiler/typecheck/Inst.lhs 1021
+             predTys (ClassP _ tys) = tys
+             dictTys (Dict {tci_pred = pred}) = predTys pred
+ 
+-            matches_tys | isJust $ merged_tys = True
+-                        | isJust ((sequence $ map (either (const Nothing) Just) match_tvs) >>= mergeTys tys) = True
+-                        | otherwise = False
+-            improved tys inst' = 
+-              case merge_tys tys inst' of
+-                   Just tys' -> (countTyVars tys') < (countTyVars tys)
+-                   Nothing   -> False
+-
+-            merge_tys tys inst' = mergeTys tys (instanceTypes inst')
+-            merged_tys = merge_tys tys match_inst
++            -- TODO: counting tyvars isn't enough.  a tyvar 'a' could be resolved to 'm a', which
++            -- would be an improvement, though ty vars increased.  add OR more nodes?
++            improved tys tys' = (countTyVars tys') < (countTyVars tys)
++                              
++            merged_tys = mergeTys tys $ instanceTypes match_inst
+ 
+             -- replace ty vars in match with ty var parameters (which we may have some preds for)
+             match_tvs' = map lookupTyVar match_tvs
+hunk ./compiler/typecheck/Inst.lhs 1048
+             toTvMapElem (TyVarTy tv, ty) = Just (tv,ty)
+             toTvMapElem _ = Nothing
+ 
+-
+             -- TODO: if one pred improves the types (fundeps), then apply that improvement
+             -- to all preds
+             matchesPredInst :: Inst -> TcM (Maybe [(TyVar,Type)])
+hunk ./compiler/typecheck/Inst.lhs 1072
+                         ; choices <- lookupPredChoices force avails (inst:stack) predInst
+                         ; let choices_params = (map (instanceTypes.fst) choices)
+                         ; let pred_tys = dictTys predInst
+-                        ; let merged_params = mapMaybe (mergeTys pred_tys) choices_params
+-                        ; let improved_params = filter (\p -> (countTyVars p) < (countTyVars pred_tys)) merged_params
++                        ; let merged_params = map (mergeTys pred_tys) choices_params
++                        ; let improved_params = filter (improved pred_tys) merged_params
+                         ; let tvMaps = map (mkTvMap . zip pred_tys) improved_params
+                         ; let improved_thetas = map improve_theta tvMaps
+ 
+hunk ./compiler/typecheck/Inst.lhs 1126
+ tyStruct (TyConApp _ tys) = "(TyConApp ? " ++ (show $ map tyStruct tys) ++ ")"
+ tyStruct (AppTy l r) = "(AppTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
+ tyStruct (FunTy l r) = "(FunTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
+-
+-mergeTys :: [Type] -> [Type] -> Maybe [Type]
+-mergeTys tys1 tys2 = sequence $ zipWith pickTy tys1 tys2
++-- map tyvars in tys1 to corresponding type or tyvar in tys2
++mergeTyMap :: [Type] -> [Type] -> [(TyVar,Type)]
++mergeTyMap tys1 tys2 = concat $ zipWith mapper tys1 tys2
+   where
+hunk ./compiler/typecheck/Inst.lhs 1130
+-    pickTy tv@(TyVarTy _) (TyVarTy _) = Just tv
+-    pickTy (TyVarTy _) ty = Just ty
+-    pickTy ty (TyVarTy _) = Just ty
+-    pickTy ty1 ty2 | tcEqType ty1 ty2 = Just ty1
+-    pickTy (TyConApp con tys1) (TyConApp _ tys2) =
+-      -- assume cons are ==
+-      mergeTys tys1 tys2 >>= \tys -> return $ TyConApp con tys
+-    pickTy (AppTy l1 r1) (AppTy l2 r2) =
+-      do l <- pickTy l1 l2
+-         r <- pickTy r1 r2
+-         return $ AppTy l r
+-    pickTy (FunTy l1 r1) (FunTy l2 r2) =
+-      do l <- pickTy l1 l2
+-         r <- pickTy r1 r2
+-         return $ FunTy l r
+-    pickTy _ _ = Nothing
++    mapper (TyVarTy tv) ty@(TyVarTy _) = [(tv,ty)]
++    mapper (TyVarTy tv) ty = [(tv,ty)]
++    mapper (TyConApp l1 [r1]) (TyConApp l2 [r2]) = (mapper (mkTyConTy l1) (mkTyConTy l2)) ++ (mapper r1 r2)
++    mapper (AppTy l1 r1) (TyConApp l2 [r2]) = (mapper l1 (mkTyConTy l2)) ++ (mapper r1 r2)
++    mapper (TyConApp l1 [r1]) (AppTy l2 r2) = (mapper (mkTyConTy l1) l2) ++ (mapper r1 r2)
++    mapper (AppTy l1 r1) (AppTy l2 r2) = (mapper l1 l2) ++ (mapper r1 r2)
++    mapper (FunTy l1 r1) (FunTy l2 r2) = (mapper l1 l2) ++ (mapper r1 r2)
++    mapper _ _ = []
+ 
+hunk ./compiler/typecheck/Inst.lhs 1139
++  
++{- for merging, two step process: 
++     1) map ty vars in match parameters to ty vars in declaration
++     2) map ty vars in declaration to types in match parameters
++   this solves the following case:
++     decl types: a a
++     match types: X b
++   the correct solution is: X X
++-}
++mergeTys l r = resolved
++  where fixedVars = mapTyVarsToTypesTypes (mergeTyMap l r) l
++        resolved = mapTyVarsToTypesTypes (mergeTyMap r fixedVars) fixedVars
+ 
+ matchInst :: Inst -> (DFunId, [Either TyVar TcType]) -> TcM LookupInstResult
+ matchInst (Dict {tci_pred=pred, tci_loc=loc}) (dfun_id, mb_inst_tys) = do
+hunk ./compiler/typecheck/Inst.lhs 1215
+ bestInstMatches :: [(Instance, [Either TyVar Type])] -> [(Instance, [Either TyVar Type])]
+ bestInstMatches [] = []
+ bestInstMatches [x] = [x]
+-bestInstMatches (x:xs) = collectMostSpecificContexts [] x xs 
++bestInstMatches xs = mostSpecificContexts $ mostSpecificParameters xs
++
++mostSpecificParameters xs = chooseMins $ (sortBy cmpParams) xs
++  where cmpParams l r = (params l) `compare` (params r)
++        params = length.snd
++        chooseMins [] = []
++        chooseMins [x] = [x]
++        chooseMins (x:xs) = x : filter (\m -> params m == params x) xs
++
++mostSpecificContexts [] = []
++mostSpecificContexts [x] = [x]
++mostSpecificContexts (x:xs) = collectMostSpecificContexts [] x xs 
+   where
+     collectMostSpecificContexts outs x []
+       | isMostSpecificContext x outs
+hunk ./compiler/typecheck/Inst.lhs 1353
+ 
+ mapTyVarsPreds tvMap = map (mapTyVarsPred tvMap) 
+ mapTyVarsPred tvMap (ClassP cls tys) = ClassP cls $ mapTyVarsTypes tvMap tys
++mapTyVarsPred tvMap (EqPred ty1 ty2) = EqPred (mapTyVarsType tvMap ty1) (mapTyVarsType tvMap ty2)
+ 
+ mapTyVarsTypes :: [(TyVar,TyVar)] -> [Type] -> [Type]
+ mapTyVarsTypes tvMap tys = map (mapTyVarsType tvMap) tys
+hunk ./compiler/typecheck/Inst.lhs 1380
+ tyVarsType (FunTy ty1 ty2) = tyVarsTypes [ty1,ty2]
+ tyVarsType (PredTy pred) = tyVarsPred pred
+ 
+-tyVarsPreds preds = tyVarsTypes $ foldr (++) [] $ map (\(ClassP _ tys) -> tys) preds
++tyVarsPreds = concatMap tyVarsPred
+ 
+ tyVarsPred :: PredType -> [TyVar]
+ tyVarsPred (ClassP _ tys) = tyVarsTypes tys
+hunk ./compiler/typecheck/Inst.lhs 1384
+-
++tyVarsPred (EqPred ty1 ty2) = tyVarsTypes [ty1, ty2]
+ 
+ tvLookupByName :: TyVar -> [(TyVar, a)] -> Maybe a
+ tvLookupByName tv1 tvMap = find (\(tv2,_) -> eqVarNamesVar tv1 tv2) tvMap >>= Just . snd
+hunk ./compiler/types/InstEnv.lhs 495
+       = find ms us rest
+ 
+       | otherwise
+-      = ASSERT2( tyVarsOfTypes tys `disjointVarSet` tpl_tvs,
++      = {- This breaks context constraints in some cases
++        ASSERT2( tyVarsOfTypes tys `disjointVarSet` tpl_tvs,
+ 		 (ppr cls <+> ppr tys <+> ppr all_tvs) $$
+ 		 (ppr dfun <+> ppr tpl_tvs <+> ppr tpl_tys)
+hunk ./compiler/types/InstEnv.lhs 499
+-		)
++		) -}
+ 		-- Unification will break badly if the variables overlap
+ 		-- They shouldn't because we allocate separate uniques for them
+         case tcUnifyTys instanceBindFun tpl_tys tys of
+}
 
 Context:
 
@@ -2725,4 +2937,4 @@ Ian Lynagh <igloo@earth.li>**20100316005137
  Ignore-this: 234e3bc29e2f26cc59d7b03d780cc352
 ] 
 Patch bundle hash:
-15e66caa8e5cb24da970eb7d167c5d4c15d311d0
+1f15b4acd315c559f63349e29dc6c9d54abc58f5
