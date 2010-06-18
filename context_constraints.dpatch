@@ -1,7 +1,9 @@
-Mon Mar  8 15:30:17 PST 2010  matt@softmechanics.net
+13 patches for repository http://darcs.haskell.org/ghc:
+
+Mon Mar  8 23:30:17 UTC 2010  matt@softmechanics.net
   * Context Constraints
 
-Sun Mar 14 22:41:58 PDT 2010  matt@softmechanics.net
+Mon Mar 15 05:41:58 UTC 2010  matt@softmechanics.net
   * Context Constraints Part 2
   
   Can now correct deduce which instance to use from type variables, in 
@@ -26,16 +28,16 @@ Sun Mar 14 22:41:58 PDT 2010  matt@softmechanics.net
   
   
 
-Tue Mar 16 11:05:20 PDT 2010  matt@softmechanics.net
+Tue Mar 16 18:05:20 UTC 2010  matt@softmechanics.net
   * Partial Cleanup
 
-Fri Mar 19 10:27:45 PDT 2010  matt@softmechanics.net
+Fri Mar 19 17:27:45 UTC 2010  matt@softmechanics.net
   * Improved force logic in lookupPred
 
-Fri Mar 19 14:45:27 PDT 2010  matt@softmechanics.net
+Fri Mar 19 21:45:27 UTC 2010  matt@softmechanics.net
   * Use mutual recursion between applyContextConstraints, lookupPred to lookup context predicates
 
-Sun Mar 21 11:24:44 PDT 2010  matt@softmechanics.net
+Sun Mar 21 18:24:44 UTC 2010  matt@softmechanics.net
   * New ContextConstraints extension flag
   
   Removed short-circuit logic to always accept a single matched element as properly constrained without checking.  
@@ -44,14 +46,14 @@ Sun Mar 21 11:24:44 PDT 2010  matt@softmechanics.net
   Made ContextConstraints always ignore unified instances.
   
 
-Tue Mar 23 22:29:04 PDT 2010  matt@softmechanics.net
+Wed Mar 24 05:29:04 UTC 2010  matt@softmechanics.net
   * Context Constraints: Loop Detection
   Added some simple loop detection to the context constraints logic.  
 
-Tue Apr  6 13:25:30 PDT 2010  matt@softmechanics.net
+Tue Apr  6 20:25:30 UTC 2010  matt@softmechanics.net
   * Context Constraints
 
-Wed Apr  7 11:59:59 PDT 2010  matt@softmechanics.net
+Wed Apr  7 18:59:59 UTC 2010  matt@softmechanics.net
   * Better Handling of Functional Dependencies in Contexts
   1) Need to only allow a predicate to "resolve" a type variable (replace it with
      a concrete type) if the pred has a functional dependency, and no dependencies
@@ -62,11 +64,17 @@ Wed Apr  7 11:59:59 PDT 2010  matt@softmechanics.net
      parameters for the instance use under consideration.
   
 
-Wed Apr 28 10:13:54 PDT 2010  matt@softmechanics.net
+Wed Apr 28 17:13:54 UTC 2010  matt@softmechanics.net
   * better handling of parametric types, i.e. (m a) in instance head
 
-Thu Apr 29 17:10:57 PDT 2010  matt@softmechanics.net
+Fri Apr 30 00:10:57 UTC 2010  matt@softmechanics.net
   * improved type merging and improvement detection
+
+Tue Jun  8 05:18:17 UTC 2010  matt@softmechanics.net
+  * move ContextConstraints to TcSimplify
+
+Fri Jun 18 20:15:18 UTC 2010  matt@softmechanics.net
+  * Remove unused declarations
 
 New patches:
 
@@ -1429,7 +1437,7 @@ hunk ./compiler/main/DynFlags.hs 194
     | Opt_MonomorphismRestriction
     | Opt_MonoPatBinds
     | Opt_MonoLocalBinds
-hunk ./compiler/main/DynFlags.hs 1639
+hunk ./compiler/main/DynFlags.hs 1638
    ( "FunctionalDependencies",           Opt_FunctionalDependencies, const Supported ),
    ( "GeneralizedNewtypeDeriving",       Opt_GeneralizedNewtypeDeriving, const Supported ),
    ( "OverlappingInstances",             Opt_OverlappingInstances, const Supported ),
@@ -2879,9 +2887,3222 @@ hunk ./compiler/types/InstEnv.lhs 499
  		-- They shouldn't because we allocate separate uniques for them
          case tcUnifyTys instanceBindFun tpl_tys tys of
 }
+[move ContextConstraints to TcSimplify
+matt@softmechanics.net**20100608051817
+ Ignore-this: e9e489d931e294fd80e0955f0018f349
+] {
+hunk ./compiler/typecheck/Inst.lhs 29
+ 	tcTyVarsOfInsts, ipNamesOfInst, ipNamesOfInsts, fdPredsOfInst,
+ 	fdPredsOfInsts, growInstsTyVars, getDictClassTys, dictPred,
+ 
+-	lookupSimpleInst, LookupInstResult(..), 
++	-- lookupSimpleInst, LookupInstResult(..), 
++
++  -- MATT: additional exports to TcSimplify
++  newDict,
++  instCallDicts,
++
+ 	tcExtendLocalInstEnv, tcGetInstEnvs, getOverlapFlag,
+ 
+ 	isAbstractableInst, isEqInst,
+hunk ./compiler/typecheck/Inst.lhs 761
+ 		-- OK, now extend the envt
+ 	; return (extendInstEnv home_ie ispec') }
+ 
+-contextConstraintsEnabled :: TcM Bool
+-contextConstraintsEnabled 
+-  = do { dflags <- getDOpts
+-       ; return $ dopt Opt_ContextConstraints dflags
+-  }
+-  
+ getOverlapFlag :: TcM OverlapFlag
+ getOverlapFlag 
+   = do 	{ dflags <- getDOpts
+hunk ./compiler/typecheck/Inst.lhs 805
+ %************************************************************************
+ 
+ \begin{code}
+-data LookupInstResult
+-  = NoInstance
+-  | GenInst [Inst] (LHsExpr TcId)	-- The expression and its needed insts
+-
+-lookupSimpleInst :: Bool -> [Inst] -> Inst -> TcM LookupInstResult
+--- This is "simple" in that it returns NoInstance for implication constraints
+-
+--- It's important that lookupInst does not put any new stuff into
+--- the LIE.  Instead, any Insts needed by the lookup are returned in
+--- the LookupInstResult, where they can be further processed by tcSimplify
+-
+-lookupSimpleInst _ _ (EqInst {}) = return NoInstance
+-
+---------------------- Implications ------------------------
+-lookupSimpleInst _ _ (ImplicInst {}) = return NoInstance
+-
+---------------------- Methods ------------------------
+-lookupSimpleInst _ _ (Method {tci_oid = id, tci_tys = tys, tci_theta = theta, tci_loc = loc})
+-  = do	{ (dict_app, dicts) <- getLIE $ instCallDicts loc theta
+-	; let co_fn = dict_app <.> mkWpTyApps tys
+-	; return (GenInst dicts (L span $ HsWrap co_fn (HsVar id))) }
+-  where
+-    span = instLocSpan loc
+-
+---------------------- Literals ------------------------
+--- Look for short cuts first: if the literal is *definitely* a 
+--- int, integer, float or a double, generate the real thing here.
+--- This is essential (see nofib/spectral/nucleic).
+--- [Same shortcut as in newOverloadedLit, but we
+---  may have done some unification by now] 		
+-
+-lookupSimpleInst _ _ (LitInst { tci_lit = lit@OverLit { ol_val = lit_val
+-					          , ol_rebindable = rebindable }
+-			  , tci_ty = ty, tci_loc = iloc})
+-  | debugIsOn && rebindable = panic "lookupSimpleInst" -- A LitInst invariant
+-  | Just witness <- shortCutLit lit_val ty
+-  = do	{ let lit' = lit { ol_witness = witness, ol_type = ty }
+-	; return (GenInst [] (L loc (HsOverLit lit'))) }
+-
+-  | otherwise
+-  = do	{ hs_lit <- mkOverLit lit_val
+-	; from_thing <- tcLookupId (hsOverLitName lit_val)
+-		  -- Not rebindable, so hsOverLitName is the right thing
+-    	; method_inst <- tcInstClassOp iloc from_thing [ty]
+-	; let witness = HsApp (L loc (HsVar (instToId method_inst))) 
+-			      (L loc (HsLit hs_lit))
+-	      lit' = lit { ol_witness = witness, ol_type = ty }
+-	; return (GenInst [method_inst] (L loc (HsOverLit lit'))) }
+-  where
+-    loc = instLocSpan iloc
+-
+---------------------- Dictionaries ------------------------
+-lookupSimpleInst force avails dct@(Dict {tci_pred = pred, tci_loc = loc})
+-  = do 	{ mb_result <- lookupPred force avails [] dct
+-	; case mb_result of {
+-	    Nothing -> return NoInstance ;
+-	    Just (dfun_id, mb_inst_tys) -> do
+-
+-    { use_stage <- getStage
+-    ; checkWellStaged (ptext (sLit "instance for") <+> quotes (ppr pred))
+-    		      (topIdLvl dfun_id) (thLevel use_stage)
+-
+- 	-- It's possible that not all the tyvars are in
+-	-- the substitution, tenv. For example:
+-	--	instance C X a => D X where ...
+-	-- (presumably there's a functional dependency in class C)
+-	-- Hence mb_inst_tys :: Either TyVar TcType 
+-
+-    ; let inst_tv (Left tv)  = do { tv' <- tcInstTyVar tv; return (mkTyVarTy tv') }
+-	  inst_tv (Right ty) = return ty
+-    ; tys <- mapM inst_tv mb_inst_tys
+-    ; let
+-    	(theta, _) = tcSplitPhiTy (applyTys (idType dfun_id) tys)
+-	src_loc	   = instLocSpan loc
+-	dfun	   = HsVar dfun_id
+-    ; traceTc (text "MATT: lookupSimpleInst result theta" <+> ppr theta)
+-    ; if null theta then
+-        return (GenInst [] (L src_loc $ HsWrap (mkWpTyApps tys) dfun))
+-      else do
+-    { (dict_app, dicts) <- getLIE $ instCallDicts loc theta -- !!!
+-    ; let co_fn = dict_app <.> mkWpTyApps tys
+-    ; return (GenInst dicts (L src_loc $ HsWrap co_fn dfun))
+-    }}}}
+-
+----------------
+-
+-anyM' :: (Monad m) => [m Bool] -> m Bool
+-anyM' [] = return False
+-anyM' (x:xs) =
+-  do val <- x
+-     if val then return True
+-            else anyM' xs
+-
+-allM' :: (Monad m) => [m Bool] -> m Bool
+-allM' [] = return True
+-allM' (x:xs) =
+-  do val <- x
+-     if val then allM' xs
+-            else return False
+-
+-applyContextConstraints :: Bool ->
+-                           Inst -> 
+-                           [Inst] ->
+-                           [Inst] ->
+-                           (InstEnv, InstEnv) -> 
+-                           [Type] -> 
+-                           ([(Instance,[Either TyVar Type])], [Instance]) -> 
+-                           IOEnv (Env TcGblEnv TcLclEnv) ([(Instance,[Either TyVar Type])], [Instance])
+-applyContextConstraints _ _ _ _ _ _ x@([],_) = return x
+-applyContextConstraints force inst avails stack ies tys (ms,us) = 
+-  do maybes <- mapM matchesContext ms
+-     let ms' = mapMaybe id maybes
+-     traceTc (text "MATT: applyContextConstraints" <+> 
+-         vcat [text "tys" <+> ppr tys,
+-               text "pred" <+> ppr inst,
+-               text "matches" <+> ppr ms,
+-               text "constrained" <+> ppr ms',
+-               text "unifs" <+> ppr us])
+-  
+-     return (ms', us)
+-  where
+-    pop [] = []
+-    pop (_:x) = x
+-
+-    matchesContext :: (Instance, [Either TyVar Type]) -> TcM (Maybe (Instance, [Either TyVar Type]))
+-    matchesContext m@(match_inst, match_tvs) =
+-        do {
+-        ;(GenInst predInsts _) <- matchInst inst (instanceDFunId match_inst, match_tvs)
+-        ;traceTc (text "MATT: matchesContext" <+>
+-            vcat [text "inst" <+> ppr inst
+-                 ,text "stack" <+> ppr stack
+-                 ,text "tys" <+> ppr tys
+-                 ,text ("tys struct: " ++ (unwords $ map tyStruct tys))
+-                 ,text "matchTys" <+> ppr (instanceTypes match_inst)
+-                 ,text ("matchTys struct: " ++ (unwords $ map tyStruct (instanceTypes match_inst)))
+-                 ,text "matchTvs" <+> ppr match_tvs
+-                 ,text "match instanceTyVars" <+> ppr (instanceTyVars match_inst)
+-                 ,text "merged_tys" <+> ppr merged_tys
+-                 ,text ("merged_tys: " ++ (unwords $ map tyStruct merged_tys))
+-                 ,text "match" <+> ppr match_inst
+-                 ,text "predInsts" <+> ppr predInsts
+-                 ,text "theta tyVars" <+> ppr (tyVarsPreds theta)
+-                 ])
+-        ; if improved tys merged_tys
+-              then do -- merging gave us more specific tys, so start over with these.
+-                   -- reuse (instLoc inst) because I don't know how to make one for
+-                   -- this new pred.  I believe it's the location of the use, not the def.
+-                   merged_pred <- newDict (instLoc inst) $ ClassP (instanceClass match_inst) merged_tys 
+-                   traceTc (text "MATT: types improved; restarting" <+> ppr merged_pred)
+-
+-                   looped <- isAvail stack merged_pred
+-                   if looped then return Nothing
+-                             else do r <- lookupPred force avails (merged_pred:pop stack) merged_pred
+-                                     return $ case r of 
+-                                                   Nothing -> Nothing
+-                                                   Just (_, tys_tvs) -> Just (match_inst, tys_tvs)
+-             else do r <- matchPredLoop [] [] predInsts
+-                     case r of
+-                          Nothing -> return Nothing
+-                          Just [] -> return $ Just m
+-                          Just tvMap -> do { let match_tvs' = updateMatchTypes tvMap
+-                                           ; traceTc (text "MATT: fixing types" <+>
+-                                                vcat [ text "tvMap" <+> ppr tvMap
+-                                                     , text "match_tvs" <+> ppr match_tvs
+-                                                     , text "match_tvs'" <+> ppr match_tvs'
+-                                                     ])
+-                                           ; return $ Just (match_inst, match_tvs')
+-                                           }
+-        }
+-      where (_, theta, _, _) = instanceHead match_inst
+-            (Instance { is_tvs = tpl_tvs, is_tys = tpl_tys }) = match_inst
+-
+-            updateMatchTypes :: [(TyVar,Type)] -> [Either TyVar Type]
+-            updateMatchTypes tvMap = map update match_tvs
+-              where update (Left tv) = Right $ mapTyVarType tvMap tv
+-                        -- Left tv
+-                    update (Right ty) = Right $ mapTyVarsToTypesType tvMap ty
+-
+-            matchPredLoop :: [(TyVar,Type)] -> [Inst] -> [Inst] -> TcM (Maybe [(TyVar,Type)])
+-            matchPredLoop tvMap [] []  = return $ Just tvMap
+-            matchPredLoop _ faileds [] 
+-              = do traceTc (text "MATT: matchPredLoop FAILED" <+> ppr faileds)
+-                   return Nothing
+-            matchPredLoop tvMap failedPreds (pred:preds) 
+-              = do traceTc (text "MATT: matchPredLoop" <+>
+-                      vcat [text "tvMap" <+> ppr tvMap
+-                           ,text "pred" <+> ppr pred
+-                           ,text "faileds" <+> ppr failedPreds
+-                           ])
+-                   r <- matchesPredInst pred
+-                   
+-                   -- returns a typemap if matching improved types
+-                   case r of
+-                        -- succeeded, but no tyVars were resolved
+-                        Just [] -> matchPredLoop tvMap failedPreds preds
+-
+-                        -- succeeded with tyVars resolved!
+-                        Just mapUpdate -> do let preds' = (mapTyVarsToTypesInsts mapUpdate $ preds ++ failedPreds)
+-                                             traceTc (text "MATT: matching pred improved tyVars" <+>
+-                                                vcat [text "pred" <+> ppr pred
+-                                                     ,text "improved" <+> ppr mapUpdate
+-                                                     ,text "todo" <+> ppr preds
+-                                                     ,text "faileds" <+> ppr failedPreds
+-                                                     ,text "todo'" <+> ppr preds'
+-                                                     ])
+-                                             -- retry faileds with improvement
+-                                             -- TODO: is ++ right?
+-                                             matchPredLoop (tvMap ++ mapUpdate) [] preds'
+-                        Nothing -> matchPredLoop tvMap (pred:failedPreds) preds
+-
+-            mkThetaTyMap :: Inst -> PredType -> (Inst,[(Type,Type)])
+-            mkThetaTyMap inst pred = (inst, zip (predTys pred) (dictTys inst))
+-            predTys (ClassP _ tys) = tys
+-            dictTys (Dict {tci_pred = pred}) = predTys pred
+-
+-            -- TODO: counting tyvars isn't enough.  a tyvar 'a' could be resolved to 'm a', which
+-            -- would be an improvement, though ty vars increased.  add OR more nodes?
+-            improved tys tys' = (countTyVars tys') < (countTyVars tys)
+-                              
+-            merged_tys = mergeTys tys $ instanceTypes match_inst
+-
+-            -- replace ty vars in match with ty var parameters (which we may have some preds for)
+-            match_tvs' = map lookupTyVar match_tvs
+-              where tvMap = mkTvMap $ zip (instanceTypes match_inst) tys
+-                    lookupTyVar (Left tv) = 
+-                        case tvLookupByName tv tvMap of
+-                             Just (TyVarTy tv') -> Left tv'
+-                             Just ty -> Right ty  -- is this right? maybe just keep tv
+-                             Nothing -> Left tv
+-
+-                    lookupTyVar (Right ty@(TyVarTy tv)) = Right $ fromMaybe ty (tvLookupByName tv tvMap)
+-                    lookupTyVar (Right ty) = Right ty
+-
+-            -- some pred (fundep) resolved a var!  update any references to that var elsewhere in the theta
+-            improve_theta :: [(TyVar,Type)] -> [PredType] 
+-            improve_theta tvMap = mapTyVarsToTypesPreds tvMap theta
+-
+-            mkTvMap :: [(Type,Type)] -> [(TyVar,Type)]
+-            mkTvMap = mapMaybe toTvMapElem
+-            toTvMapElem (TyVarTy tv, ty) = Just (tv,ty)
+-            toTvMapElem _ = Nothing
+-
+-            -- TODO: if one pred improves the types (fundeps), then apply that improvement
+-            -- to all preds
+-            matchesPredInst :: Inst -> TcM (Maybe [(TyVar,Type)])
+-            matchesPredInst predInst =
+-              do traceTc (text "MATT: matchesPredInst" <+>
+-                    vcat [text "inst" <+> ppr inst
+-                         ,text "match_tvs" <+> ppr match_tvs
+-                         ,text "tys" <+> ppr tys
+-                         ,text "pred" <+> ppr predInst
+-                         ,text "predTys" <+> ppr (dictTys predInst)
+-                         ])
+-
+-                 avail <- isAvail avails predInst
+-                 if avail
+-                    then return $ Just []
+-                    else do looped <- isAvail stack predInst
+-                            if looped 
+-                               then return Nothing
+-                               else lookup
+-              where lookup
+-                      = do {
+-                        ; choices <- lookupPredChoices force avails (inst:stack) predInst
+-                        ; let choices_params = (map (instanceTypes.fst) choices)
+-                        ; let pred_tys = dictTys predInst
+-                        ; let merged_params = map (mergeTys pred_tys) choices_params
+-                        ; let improved_params = filter (improved pred_tys) merged_params
+-                        ; let tvMaps = map (mkTvMap . zip pred_tys) improved_params
+-                        ; let improved_thetas = map improve_theta tvMaps
+-
+-                        -- TODO: don't improve type variables unless fun dep, we have all the dependent types
+-                        -- FIXME: hack to simulate fundep restriction: must have at least one real type
+-                        ; let canImprove = 0 < countTyVars pred_tys
+-                        ; traceTc (text "MATT: Lookup Choices" <+>
+-                             vcat [text "inst" <+> ppr inst
+-                                  ,text "match_tvs" <+> ppr match_tvs
+-                                  ,text "tys" <+> ppr tys
+-                                  ,text "pred" <+> ppr predInst
+-                                  ,text "pred tys" <+> ppr pred_tys
+-                                  ,text "choices" <+> ppr choices
+-                                  ,text "choices parameterizations" <+> ppr choices_params
+-                                  ,text "merged parameterizations" <+> ppr merged_params
+-                                  ,text "improved parameterizations" <+> ppr improved_params
+-                                  ,text "tvMaps" <+> ppr tvMaps
+-                                  ,text "theta" <+> ppr theta
+-                                  ,text "improved thetas" <+> ppr improved_thetas
+-                                  ,text "can improve" <+> ppr canImprove
+-                                  ])
+-
+-                        -- TODO: what if >1 matches?  should we try them all?
+-
+-                        ; if canImprove 
+-                             then case tvMaps of 
+-                                       [tvMap] -> do traceTc (text "MATT: Lookup Succeeded!")
+-                                                     return $ Just tvMap
+-                                       _ -> case choices of
+-                                                 [_] -> return $ Just []
+-                                                 _ -> return Nothing
+-                             else case choices of
+-                                       [_] -> return $ Just []
+-                                       _ -> return Nothing
+-
+-                      }
+-
+-
+-countTyVars :: [Type] -> Int
+-countTyVars tys = 
+-  sum $ map count tys
+-  where count :: Type -> Int
+-        count (TyVarTy _) = 1
+-        count (AppTy ty1 ty2) = (count ty1) + (count ty2)
+-        count (TyConApp _ tys') = countTyVars tys'
+-        count (FunTy ty1 ty2) = (count ty1) + (count ty2)
+-
+-tyStruct :: Type -> [Char]
+-tyStruct (TyVarTy _) = "TyVarTy"
+-tyStruct (TyConApp _ tys) = "(TyConApp ? " ++ (show $ map tyStruct tys) ++ ")"
+-tyStruct (AppTy l r) = "(AppTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
+-tyStruct (FunTy l r) = "(FunTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
+--- map tyvars in tys1 to corresponding type or tyvar in tys2
+-mergeTyMap :: [Type] -> [Type] -> [(TyVar,Type)]
+-mergeTyMap tys1 tys2 = concat $ zipWith mapper tys1 tys2
+-  where
+-    mapper (TyVarTy tv) ty@(TyVarTy _) = [(tv,ty)]
+-    mapper (TyVarTy tv) ty = [(tv,ty)]
+-    mapper (TyConApp l1 [r1]) (TyConApp l2 [r2]) = (mapper (mkTyConTy l1) (mkTyConTy l2)) ++ (mapper r1 r2)
+-    mapper (AppTy l1 r1) (TyConApp l2 [r2]) = (mapper l1 (mkTyConTy l2)) ++ (mapper r1 r2)
+-    mapper (TyConApp l1 [r1]) (AppTy l2 r2) = (mapper (mkTyConTy l1) l2) ++ (mapper r1 r2)
+-    mapper (AppTy l1 r1) (AppTy l2 r2) = (mapper l1 l2) ++ (mapper r1 r2)
+-    mapper (FunTy l1 r1) (FunTy l2 r2) = (mapper l1 l2) ++ (mapper r1 r2)
+-    mapper _ _ = []
+-
+-  
+-{- for merging, two step process: 
+-     1) map ty vars in match parameters to ty vars in declaration
+-     2) map ty vars in declaration to types in match parameters
+-   this solves the following case:
+-     decl types: a a
+-     match types: X b
+-   the correct solution is: X X
+--}
+-mergeTys l r = resolved
+-  where fixedVars = mapTyVarsToTypesTypes (mergeTyMap l r) l
+-        resolved = mapTyVarsToTypesTypes (mergeTyMap r fixedVars) fixedVars
+-
+-matchInst :: Inst -> (DFunId, [Either TyVar TcType]) -> TcM LookupInstResult
+-matchInst (Dict {tci_pred=pred, tci_loc=loc}) (dfun_id, mb_inst_tys) = do
+-    { use_stage <- getStage
+-    ; checkWellStaged (ptext (sLit "instance for") <+> quotes (ppr pred))
+-    		      (topIdLvl dfun_id) (thLevel use_stage)
+-
+- 	-- It's possible that not all the tyvars are in
+-	-- the substitution, tenv. For example:
+-	--	instance C X a => D X where ...
+-	-- (presumably there's a functional dependency in class C)
+-	-- Hence mb_inst_tys :: Either TyVar TcType 
+-
+---    ; let inst_tv (Left tv)  = do { tv' <- tcInstTyVar tv; return (mkTyVarTy tv') }
+---	  inst_tv (Right ty) = return ty
+---    ; tys <- mapM inst_tv mb_inst_tys
+-      ; let toType (Left tv) = mkTyVarTy tv
+-            toType (Right ty) = ty
+-      ; let  tys = map toType mb_inst_tys
+-    ; let
+-    	(theta, _) = tcSplitPhiTy (applyTys (idType dfun_id) tys)
+-	src_loc	   = instLocSpan loc
+-	dfun	   = HsVar dfun_id
+-    ; if null theta then
+-        return (GenInst [] (L src_loc $ HsWrap (mkWpTyApps tys) dfun))
+-      else do
+-    { (dict_app, dicts) <- getLIE $ instCallDicts loc theta -- !!!
+-    ; let co_fn = dict_app <.> mkWpTyApps tys
+-    ; return (GenInst dicts (L src_loc $ HsWrap co_fn dfun))
+-    }}
+-
+-
+-isAvail :: [Inst] -> Inst -> TcM Bool
+-isAvail avails inst 
+-  = do traceTc (text "MATT: isAvail" <+> 
+-          vcat [text "inst" <+> (ppr inst)
+-               ,text "avails" <+> ppr avails
+-               ])
+-       let res = find (==inst) avails
+-       case res of 
+-            Just _ -> 
+-              do traceTc (text "MATT: isAvail: YES" <+> (ppr inst))
+-                 return True
+-            Nothing -> 
+-              do traceTc (text "MATT: isAvail: NO" <+> (ppr inst))
+-                 return False
+-
+-
+-lookupInstResultAvailP :: [Inst] -> LookupInstResult -> TcM Bool
+-lookupInstResultAvailP avails (GenInst dicts _) =
+-  do avails <- mapM (isAvail avails) dicts
+-     return $ and avails
+-
+-instMatchAvailP :: [Inst] ->
+-                   Inst -> 
+-                   (Instance, [Either TyVar TcType]) -> 
+-                   IOEnv (Env TcGblEnv TcLclEnv) Bool
+-instMatchAvailP avails inst (ispec, inst_tys) =
+-  do match' <- matchInst inst (is_dfun ispec, inst_tys)
+-     lookupInstResultAvailP avails match'
+-     
+-bestInstMatches :: [(Instance, [Either TyVar Type])] -> [(Instance, [Either TyVar Type])]
+-bestInstMatches [] = []
+-bestInstMatches [x] = [x]
+-bestInstMatches xs = mostSpecificContexts $ mostSpecificParameters xs
+-
+-mostSpecificParameters xs = chooseMins $ (sortBy cmpParams) xs
+-  where cmpParams l r = (params l) `compare` (params r)
+-        params = length.snd
+-        chooseMins [] = []
+-        chooseMins [x] = [x]
+-        chooseMins (x:xs) = x : filter (\m -> params m == params x) xs
+-
+-mostSpecificContexts [] = []
+-mostSpecificContexts [x] = [x]
+-mostSpecificContexts (x:xs) = collectMostSpecificContexts [] x xs 
+-  where
+-    collectMostSpecificContexts outs x []
+-      | isMostSpecificContext x outs
+-        = x:outs
+-      | otherwise
+-        = outs
+-
+-    collectMostSpecificContexts outs x ins@(x':ins')
+-      | isMostSpecificContext x (outs ++ ins)
+-        = collectMostSpecificContexts (x:outs) x' ins'
+-      | otherwise
+-        = collectMostSpecificContexts outs x' ins'
+-  
+-thetaProperSubset :: ThetaType -> ThetaType -> Bool
+-thetaProperSubset subTheta superTheta =
+-  -- NO pred exists strictly more times in sub than in super
+-  -- SOME pred exists less times in sub than in super 
+-
+-  (not $ any (hasLess super sub) combined) && (any (hasLess sub super) combined)
+-
+-  where hasLess t1 t2 c = (count c t1) < (count c t2)
+-
+-        cmpPred (ClassP c1 _) (ClassP c2 _) = c1 == c2
+-        cmpPred _ _ = False -- TODO: handle other predicates
+-
+-        count _ [] = 0
+-        count a (b:bs) | a `cmpPred` b = 1 + (count a bs)
+-                       | otherwise     = count a bs
+-
+-        sub = filter isClassPred subTheta
+-        super = filter isClassPred superTheta
+-
+-        combined = sub ++ super
+-
+-isMoreSpecificInst :: (Instance, [Either TyVar Type]) -> (Instance, [Either TyVar Type]) -> Bool
+-isMoreSpecificInst x y 
+-    = not $ thetaProperSubset (theta x) (theta y)
+-  where theta = instanceTheta.fst
+-
+-instanceTheta :: Instance -> ThetaType
+-instanceTheta = (\(_,x,_,_) -> x) . instanceHead 
+-instanceTyVars :: Instance -> [TyVar]
+-instanceTyVars = (\(x,_,_,_) -> x) . instanceHead
+-instanceTypes :: Instance -> [Type]
+-instanceTypes = (\(_,_,_,x) -> x) . instanceHead
+-instanceClass :: Instance -> Class
+-instanceClass = (\(_,_,x,_) -> x) . instanceHead
+-
+-isMostSpecificContext :: (Instance, [Either TyVar Type])
+-                      -> [(Instance, [Either TyVar Type])]
+-                      -> Bool
+-isMostSpecificContext x xs 
+-    = all (isMoreSpecificInst x) xs
+-
+-zipWith' :: (a -> a1 -> Bool) -> [a] -> [a1] -> Bool
+-zipWith' f x y
+-  | eqLength x y
+-    = and $ zipWith f x y
+-  | otherwise
+-    = False
+-  where eqLength x y = (length x) == (length y)
+-
+-tcEqTheta = zipWith' eqVarNamesPred
+-
+-eqVarNamesPred :: PredType -> PredType -> Bool
+-eqVarNamesPred (ClassP c1 vs1) (ClassP c2 vs2) 
+-  = c1 == c2 && vs1 `eqVarNamesTypes` vs2
+-eqVarNamesPred _ _ = False
+-
+-eqVarNamesTypes = zipWith' eqVarNamesType
+-
+-eqVarNamesType (TyVarTy tv1) (TyVarTy tv2) = tv1 `eqVarNamesVar` tv2
+-eqVarNamesType (AppTy f1 a1) (AppTy f2 a2) = f1 `eqVarNamesType` f2 && a1 `eqVarNamesType` a2
+-eqVarNamesType (TyConApp c1 tys1) (TyConApp c2 tys2) = c1 == c2 && tys1 `eqVarNamesTypes` tys2
+-eqVarNamesType (FunTy f1 a1) (FunTy f2 a2) = f1 `eqVarNamesType` f2 && a1 `eqVarNamesType` a2
+-eqVarNamesType (ForAllTy tv1 ty1) (ForAllTy tv2 ty2) = tv1 `eqVarNamesVar` tv2 && ty1 `eqVarNamesType` ty2
+-eqVarNamesType (PredTy p1) (PredTy p2) = p1 `eqVarNamesPred` p2
+-eqVarNamesType _ _ = False
+-
+-eqVarNamesVar x y = (getName x) == (getName y)
+-
+-checkAvail avails inst (insts,unifs) = 
+-  do insts' <- filterM (instMatchAvailP avails inst) insts
+-     return (insts', unifs)
+-
+--- TODO: make sure TYPES are equal too!
+-tcEqInstMatch (i1, t1) (i2, t2) 
+-  | tcEqInstTypes t1 t2 && tcEqTypes (instanceTypes i1) (instanceTypes i2)
+-    = case mkInstTypeMap i1 i2 of
+-      Nothing -> False
+-      (Just tvMap) -> tcEqTheta theta1 theta2
+-        where theta1 = mapTyVarsPreds tvMap $ instanceTheta i1
+-              theta2 = instanceTheta i2
+-  | otherwise
+-    = False
+-
+-mapTyVarsToTypesInsts tvMap = map (mapTyVarsToTypesInst tvMap)
+-mapTyVarsToTypesInst tvMap inst@(Dict {tci_pred=pred}) = inst { tci_pred = mapTyVarsToTypesPred tvMap pred }
+-
+-mapTyVarsToTypesPreds tvMap = map (mapTyVarsToTypesPred tvMap) 
+-mapTyVarsToTypesPred tvMap (ClassP cls tys) = ClassP cls $ mapTyVarsToTypesTypes tvMap tys
+-
+-mapTyVarsToTypesTypes :: [(TyVar,Type)] -> [Type] -> [Type]
+-mapTyVarsToTypesTypes tvMap tys = map (mapTyVarsToTypesType tvMap) tys
+-
+-mapTyVarsToTypesType :: [(TyVar,Type)] -> Type -> Type
+-mapTyVarsToTypesType tvMap (TyVarTy tv) = mapTyVarType tvMap tv
+-mapTyVarsToTypesType tvMap (AppTy ty1 ty2) = AppTy (mapTyVarsToTypesType tvMap ty1) (mapTyVarsToTypesType tvMap ty2)
+-mapTyVarsToTypesType tvMap (TyConApp tc tys) = TyConApp tc $ mapTyVarsToTypesTypes tvMap tys
+-mapTyVarsToTypesType tvMap (FunTy ty1 ty2) = FunTy (mapTyVarsToTypesType tvMap ty1) (mapTyVarsToTypesType tvMap ty2)
+---mapTyVarsToTypesType tvMap (ForAllTy tv ty) = ForAllTy (mapTyVar tvMap tv) (mapTyVarsToTypesType tvMap ty)
+-mapTyVarsToTypesType tvMap (PredTy pred) = PredTy $ mapTyVarsToTypesPred tvMap pred
+-
+-mapTyVarType :: [(TyVar, Type)] -> TyVar -> Type
+-mapTyVarType tvMap tv = fromMaybe (TyVarTy tv) $ tvLookupByName tv tvMap 
+-
+-updateTvMap :: [(TyVar, a)] -> [(TyVar, a)] -> [(TyVar, a)]
+-updateTvMap tvMap updates
+-  = foldr update tvMap updates
+-  where update up@(v1,val) (e@(v2,_):elems) 
+-               | v1 `eqVarNamesVar` v2 = (v1,val):elems
+-               | otherwise = e:(update up elems)
+-
+-
+-mapTyVarsPreds tvMap = map (mapTyVarsPred tvMap) 
+-mapTyVarsPred tvMap (ClassP cls tys) = ClassP cls $ mapTyVarsTypes tvMap tys
+-mapTyVarsPred tvMap (EqPred ty1 ty2) = EqPred (mapTyVarsType tvMap ty1) (mapTyVarsType tvMap ty2)
+-
+-mapTyVarsTypes :: [(TyVar,TyVar)] -> [Type] -> [Type]
+-mapTyVarsTypes tvMap tys = map (mapTyVarsType tvMap) tys
+-
+-mapTyVarsType tvMap (TyVarTy tv) = TyVarTy $ mapTyVar tvMap tv
+-mapTyVarsType tvMap (AppTy ty1 ty2) = AppTy (mapTyVarsType tvMap ty1) (mapTyVarsType tvMap ty2)
+-mapTyVarsType tvMap (TyConApp tc tys) = TyConApp tc $ mapTyVarsTypes tvMap tys
+-mapTyVarsType tvMap (FunTy ty1 ty2) = FunTy (mapTyVarsType tvMap ty1) (mapTyVarsType tvMap ty2)
+-mapTyVarsType tvMap (ForAllTy tv ty) = ForAllTy (mapTyVar tvMap tv) (mapTyVarsType tvMap ty)
+-mapTyVarsType tvMap (PredTy pred) = PredTy $ mapTyVarsPred tvMap pred
+-
+-tyVarsTypes :: [Type] -> [TyVar]
+-tyVarsTypes tys = tvUnique $ foldr (++) [] $ map tyVarsType tys
+-
+-tvUnique :: [TyVar] -> [TyVar]
+-tvUnique [] = []
+-tvUnique (v:vs) | isJust $ find (eqVarNamesVar v) vs = tvUnique vs
+-              | otherwise = v:(tvUnique vs)
+-
+-tyVarsType :: Type -> [TyVar]
+-tyVarsType (TyVarTy tv) = [tv]
+-tyVarsType (AppTy ty1 ty2) = tyVarsTypes [ty1,ty2]
+-tyVarsType (TyConApp _ tys) = tyVarsTypes tys
+-tyVarsType (FunTy ty1 ty2) = tyVarsTypes [ty1,ty2]
+-tyVarsType (PredTy pred) = tyVarsPred pred
+-
+-tyVarsPreds = concatMap tyVarsPred
+-
+-tyVarsPred :: PredType -> [TyVar]
+-tyVarsPred (ClassP _ tys) = tyVarsTypes tys
+-tyVarsPred (EqPred ty1 ty2) = tyVarsTypes [ty1, ty2]
+-
+-tvLookupByName :: TyVar -> [(TyVar, a)] -> Maybe a
+-tvLookupByName tv1 tvMap = find (\(tv2,_) -> eqVarNamesVar tv1 tv2) tvMap >>= Just . snd
+-
+-tyVarsToTypes :: [(TyVar, Type)] -> Type -> Type
+-tyVarsToTypes tvMap ty@(TyVarTy tv)
+-  = case tvLookupByName tv tvMap of
+-         Nothing  -> ty
+-         Just ty' -> ty'
+-tyVarsToTypes tvMap (AppTy ty1 ty2) = AppTy (tyVarsToTypes tvMap ty1) (tyVarsToTypes tvMap ty2)
+-tyVarsToTypes tvMap (TyConApp tc tys) = TyConApp tc $ map (tyVarsToTypes tvMap) tys
+-tyVarsToTypes tvMap (FunTy ty1 ty2) = FunTy (tyVarsToTypes tvMap ty1) (tyVarsToTypes tvMap ty2)
+-tyVarsToTypes tvMap (ForAllTy tv ty) = undefined
+-tyVarsToTypes tvMap (PredTy pred) = PredTy $ tyVarsToTypesPred tvMap pred
+-
+-tyVarsToTypesPred :: [(TyVar, Type)] -> PredType -> PredType
+-tyVarsToTypesPred tvMap (ClassP cls tys) = ClassP cls $ map (tyVarsToTypes tvMap) tys
+-
+-mapTyVar :: [(TyVar, TyVar)] -> TyVar -> TyVar
+-mapTyVar tvMap tv = fromMaybe tv $ tvLookupByName tv tvMap 
+-
+-mkInstTypeMap :: Instance -> Instance -> Maybe [(TyVar, TyVar)]
+-mkInstTypeMap i1 i2
+-  | (length tvs1) == (length tvs2)
+-    = Just $ filter (\(v1, v2) -> not $ eqVarNamesVar v1 v2) $ zip tvs1 tvs2
+-  | otherwise
+-    = Nothing
+-  where tvs1 = instanceTyVars i1
+-        tvs2 = instanceTyVars i2
+-
+--- should always be the same length
+-tcEqInstTypes [] []         = True
+-tcEqInstTypes (x:xs) (y:ys) = tcEqInstType x y && tcEqInstTypes xs ys
+-tcEqInstTypes _ _           = False
+-
+-tcEqInstType (Left _) (Right _) = False
+-tcEqInstType (Right _) (Left _) = False
+-tcEqInstType (Left _) (Left _) = True
+-tcEqInstType (Right ty1) (Right ty2) = tcEqType ty1 ty2
+-
+-
+-removeDuplicates :: [(Instance, [Either TyVar TcType])] -> [(Instance, [Either TyVar TcType])]
+-removeDuplicates [] = []
+-removeDuplicates [a] = [a]
+-removeDuplicates (a:as)
+-  | isDuplicate a = removeDuplicates as
+-  | otherwise     = a:(removeDuplicates as)
+-  where isDuplicate a = isJust $ find (tcEqInstMatch a) as 
+-
+--- lookupUnif :: Instance -> [(Instance, [Either TyVar TcType])]
+-lookupUnif inst_envs unif = 
+-  lookupInstEnv inst_envs cls tys
+-  -- return found
+-  where tys = instanceTypes unif
+-        cls = instanceClass unif
+-        -- ([found],[]) = lookupInstEnv inst_envs cls tys
+-
+-lookupPredChoices :: Bool -> [Inst] -> [Inst] -> Inst -> TcM [(Instance, [Either TyVar TcType])]
+-lookupPredChoices force avails stack inst@(Dict {tci_pred = pred@(ClassP clas tys)})
+-  = do { ; eps     <- getEps
+-        ; tcg_env <- getGblEnv
+-        ; let inst_envs = (eps_inst_env eps, tcg_inst_env tcg_env)
+-        ; let insts = lookupInstEnv inst_envs clas tys 
+-        ; traceTc (text "MATT: STACK" <+> ppr stack)
+-        ; let inst_matches = fst insts
+-        ; ASSERT( and $ map ((\x -> tcEqInstTypes x x).snd) inst_matches)
+-
+-        -- TODO: check for ContextConstraints flag
+-        case force of
+-            True -> traceTc (text "MATT: LOOKUP (FORCE)" <+> ppr pred)
+-            False -> traceTc (text "MATT: LOOKUP" <+> ppr pred)
+-        ; traceTc (text "MATT: MATCHES" <+> ppr inst_matches)
+-        ; constrained <- applyContextConstraints force inst avails stack inst_envs tys insts 
+-        ; traceTc (text "MATT: CONSTRAINED" <+> ppr constrained)
+-        ; avail_insts <- checkAvail avails inst insts
+-        ; traceTc (text "MATT: AVAIL INSTS" <+> (ppr avail_insts))
+-        ; let best_avail = (\(x,y) -> (bestInstMatches x, y)) avail_insts
+-        ; traceTc (text "MATT: BEST AVAIL INSTS" <+> (ppr best_avail))
+-        ; let both_dupes = (\(x1,y1) (x2,y2) -> ((x1++x2),y1++y2)) avail_insts constrained
+-        ; traceTc (text "MATT: BOTH WORLDS WITH DUPES" <+> (ppr both_dupes))
+-        ; let both = (\(x1,y1) (x2,y2) -> (removeDuplicates (x1++x2), (y1++y2))) avail_insts constrained
+-        ; traceTc (text "MATT: BOTH WORLDS" <+> (ppr both))
+-        ; let best_both = (\(x,y) -> (bestInstMatches x, y)) both
+-        ; traceTc (text "MATT: BEST OF BOTH WORLDS" <+> (ppr best_both))
+-        ; let (best_matches, best_unifs) = best_both
+-        ; let best_possible = filter (flip isMostSpecificContext inst_matches) best_matches
+-        ; traceTc (text "MATT: BEST POSSIBLE" <+> (ppr best_possible))
+-
+-        -- TODO: if adopting a unif, make sure the type corresponding to each typevar we're
+-        -- looking for matches the known contexts.  That should help constrain multiple
+-        -- unifs as well
+-        ; let all_unifs = map (lookupUnif inst_envs) best_unifs
+-        ; traceTc (text "MATT: ALL UNIFS" <+> (ppr all_unifs))
+-        ; let unif_matches = removeDuplicates $ foldr (++) [] $ map fst all_unifs 
+-        ; traceTc (text "MATT: UNIF MATCHES" <+> (ppr unif_matches))
+-
+-        -- TODO: to constrain unifs, merge tys with instance tys (if instance has a type for a tyvar in tys,
+-        -- use it.  if tys has a type for a tyvar in instance, use that
+-        ; constrained_unifs <- applyContextConstraints force inst avails stack inst_envs tys (unif_matches, [])
+-        ; traceTc (text "MATT: CONSTRAINED UNIFS" <+> (ppr constrained_unifs))
+-        ; let best_unifs = bestInstMatches $ fst constrained_unifs
+-        ; traceTc (text "MATT: BEST UNIFS" <+> (ppr best_unifs))
+-        ; let best_unifs_possible = filter (flip isMostSpecificContext unif_matches) best_unifs
+-        ; traceTc (text "MATT: BEST POSSIBLE" <+> (ppr best_unifs_possible))
+-
+-        ; let allTypes = 0 == countTyVars tys
+-        ; let someTypes = 0 < countTyVars tys
+-        ; let allVars = length tys == countTyVars tys
+-
+-        -- if there are better potential matches, delay deciding as long as possible.
+-        -- if there are no type vars in the lookupPred, waiting won't help, so decide now
+-        -- if force, decide now
+-        ; let decide = allTypes || force
+-
+-
+-        ; let final' = if (null best_matches) && someTypes
+-                               then if decide
+-                                       then ((best_unifs)::([(Instance, [Either TyVar Type])]))
+-                                       else ((best_unifs_possible)::([(Instance, [Either TyVar Type])]))
+-                               else if decide 
+-                                       -- time to decide. pick the best match(es).
+-                                       then best_matches
+-                                       -- still have time to see if we get a better match.
+-                                       -- if there is no better match, can decide now
+-                                       else best_possible
+-        ; case force of
+-            True -> traceTc (text "MATT: LOOKUP DONE (FORCE)" <+> 
+-                        vcat [text "pred" <+> ppr pred,
+-                              text "final" <+> ppr final'])
+-            False -> traceTc (text "MATT: LOOKUP DONE" <+> 
+-                        vcat [text "pred" <+> ppr pred,
+-                              text "final" <+> ppr final'])
+-        ; traceTc (text "MATT: DONE: " <+> (ppr final'))
+-        ; return final'
+-      }
+-
+-lookupPred :: Bool -> [Inst] -> [Inst] -> Inst -> TcM (Maybe (DFunId, [Either TyVar TcType]))
+--- Look up a class constraint in the instance environment
+-lookupPred force avails stack inst@(Dict {tci_pred = pred@(ClassP clas tys)})
+-  = do	{ 
+-  ; enabled <- contextConstraintsEnabled
+-  ; final <- if not enabled 
+-      then do {
+-        ; eps     <- getEps
+-        ; tcg_env <- getGblEnv
+-        ; let inst_envs = (eps_inst_env eps, tcg_inst_env tcg_env)
+-        ; return $ lookupInstEnv inst_envs clas tys
+-      }
+-      else do {
+-        ; choices <- lookupPredChoices force avails stack inst
+-        ; return (choices, [])
+-      }
+-	; case final of {
+-	    ([(ispec, inst_tys)], []) 
+-		-> do	{ let dfun_id = is_dfun ispec
+-			; traceTc (text "lookupInst success" <+> 
+-				   vcat [text "dict" <+> ppr pred, 
+-				         text "witness" <+> ppr dfun_id
+-					 <+> ppr (idType dfun_id) ])
+-				-- Record that this dfun is needed
+-        -- only if at the top level.  otherwise, we just checking a dependency.
+-        -- we may not need it, i.e. not all deps met, better match is found
+-			; if (null stack) then record_dfun_usage dfun_id
+-          else return ()
+-			; return (Just (dfun_id, inst_tys)) } ;
+-
+-     	    (matches, unifs)
+-		-> do	{ traceTc (text "lookupInst fail" <+> 
+-				   vcat [text "dict" <+> ppr pred,
+-				   	 text "matches" <+> ppr matches,
+-				   	 text "unifs" <+> ppr unifs])
+-		-- In the case of overlap (multiple matches) we report
+-		-- NoInstance here.  That has the effect of making the 
+-		-- context-simplifier return the dict as an irreducible one.
+-		-- Then it'll be given to addNoInstanceErrs, which will do another
+-		-- lookupInstEnv to get the detailed info about what went wrong.
+-			; return Nothing }
+-	}}
+-
+-lookupPred _ _ _ (Dict {tci_pred = (IParam {})}) = return Nothing	-- Implicit parameters
+-lookupPred _ _ _ (Dict {tci_pred = (EqPred {})}) = panic "lookupPred EqPred"
+-
+-record_dfun_usage :: Id -> TcRn ()
+-record_dfun_usage dfun_id 
+-  = do	{ hsc_env <- getTopEnv
+-	; let  dfun_name = idName dfun_id
+-	       dfun_mod  = ASSERT( isExternalName dfun_name ) 
+-	         	   nameModule dfun_name
+-	; if isInternalName dfun_name ||    -- Internal name => defined in this module
+-	     modulePackageId dfun_mod /= thisPackage (hsc_dflags hsc_env)
+-	  then return () -- internal, or in another package
+-	   else do { tcg_env <- getGblEnv
+-	  	   ; updMutVar (tcg_inst_uses tcg_env)
+-			       (`addOneToNameSet` idName dfun_id) }}
+-
+ 
+ tcGetInstEnvs :: TcM (InstEnv, InstEnv)
+ -- Gets both the external-package inst-env
+hunk ./compiler/typecheck/TcSimplify.lhs 63
+ import Control.Monad
+ import Data.List
+ import Data.Maybe
++
++-- Context constraints imports
++import TyCon
++import HscTypes hiding (Avails)
++import Type
++import TypeRep
++import TcHsSyn
++import Module
++import DynFlags
+ \end{code}
+ 
+ 
+hunk ./compiler/typecheck/TcSimplify.lhs 1069
+     try_me _ = ReduceMe
+ 	-- Here's the try-hard bit
+ 
++{-
++
++instance (Preds) => Head where {...}
++
++givens == Preds
++wanted == Head
++
++-}
++contextConstraintsCheckLoop :: SDoc
++	     -> [Inst]
++       -> [Inst]
++	     -> TcM ([Inst], TcDictBinds)
++contextConstraintsCheckLoop doc stack wanteds
++  = do { (irreds,binds) <- forceCheckLoop env wanteds
++       ; return (irreds,binds)
++       }
++  where
++    try_me _ = ReduceMe
++    env = RedEnv { red_doc = doc, red_try_me = try_me,
++	     red_givens = [], 
++	     red_stack = (0,[]),
++       red_ctx_stack = stack,
++	     red_improve = True }	
++	-- Here's the try-hard bit
+ -----------------------------------------------------------
+ gentleCheckLoop :: InstLoc
+ 	       -> [Inst]		-- Given
+hunk ./compiler/typecheck/TcSimplify.lhs 1403
+ 	     		      red_try_me = try_me,
+ 	     	     	      red_givens = no_sc_this : givens, 
+ 	     	     	      red_stack = (0,[]),
++                    red_ctx_stack = [],
+ 	     	     	      red_improve = False }  -- No unification vars
+ 
+ 
+hunk ./compiler/typecheck/TcSimplify.lhs 1716
+ 	| otherwise
+ 	= do { w' <- zonkInst w  -- So that (3::Int) does not generate a call
+ 				 -- to fromInteger; this looks fragile to me
+-	     ; lookup_result <- lookupSimpleInst False [] w'
++	     ; lookup_result <- lookupSimpleInst False [] [] w'
+ 	     ; case lookup_result of
+ 		 NoInstance      -> go (w:irreds) binds ws
+ 		 GenInst ws' rhs -> go irreds binds' (ws' ++ ws)
+hunk ./compiler/typecheck/TcSimplify.lhs 1888
+  
+ 	   , red_stack  :: (Int, [Inst])	-- Recursion stack (for err msg)
+ 						-- See Note [RedStack]
++     , red_ctx_stack :: [Inst] -- Recursion stack for context constraints.
+   }
+ 
+ -- Note [Rigidity]
+hunk ./compiler/typecheck/TcSimplify.lhs 1910
+   = RedEnv { red_doc = doc, red_try_me = try_me,
+ 	     red_givens = givens, 
+ 	     red_stack = (0,[]),
++       red_ctx_stack = [],
+ 	     red_improve = True }	
+ 
+ mkInferRedEnv :: SDoc -> (Inst -> WhatToDo) -> RedEnv
+hunk ./compiler/typecheck/TcSimplify.lhs 1919
+   = RedEnv { red_doc = doc, red_try_me = try_me,
+ 	     red_givens = [], 
+ 	     red_stack = (0,[]),
++       red_ctx_stack = [],
+ 	     red_improve = True }	
+ 
+ mkNoImproveRedEnv :: SDoc -> (Inst -> WhatToDo) -> RedEnv
+hunk ./compiler/typecheck/TcSimplify.lhs 1928
+   = RedEnv { red_doc = doc, red_try_me = try_me,
+ 	     red_givens = [], 
+ 	     red_stack = (0,[]),
++       red_ctx_stack = [],
+ 	     red_improve = True }	
+ 
+ data WhatToDo
+hunk ./compiler/typecheck/TcSimplify.lhs 2270
+ 	-- Don't bother for implication constraints, which take real work
+     try_simple do_this_otherwise
+       = do { traceTc (text "MATT: calling lookupSimpleInst" <+> ppr avails)
+-        ;res <- lookupSimpleInst force (availsInsts avails) wanted
++        ;res <- lookupSimpleInst force (red_ctx_stack env) (availsInsts avails) wanted
+ 	   ; case res of
+ 	        GenInst [] rhs -> addWanted AddSCs avails wanted rhs []
+ 	        _              -> do_this_otherwise avails wanted }
+hunk ./compiler/typecheck/TcSimplify.lhs 2382
+ 
+ ---------------------------------------------
+ reduceInst :: Bool -> RedEnv -> Avails -> Inst -> TcM (Avails, LookupInstResult)
+-reduceInst force _ avails other_inst
+-  = do	{ result <- lookupSimpleInst force (availsInsts avails) other_inst
++reduceInst force env avails other_inst
++  = do	{ result <- lookupSimpleInst force (red_ctx_stack env) (availsInsts avails) other_inst
+ 	; return (avails, result) }
+ \end{code}
+ 
+hunk ./compiler/typecheck/TcSimplify.lhs 2907
+   where 
+     doc = text "tcSimplifyInteractive"
+ 
++tcSimplifyTest :: [Inst] -> [Inst] -> TcM Bool
++tcSimplifyTest stack wanteds
++  = tc_simplify_top_test doc True stack wanteds
++  where 
++    doc = text "tcSimplifyTest"
++
+ -- The TcLclEnv should be valid here, solely to improve
+ -- error message generation for the monomorphism restriction
+ tc_simplify_top :: SDoc -> Bool -> [Inst] -> TcM (Bag (LHsBind TcId))
+hunk ./compiler/typecheck/TcSimplify.lhs 2946
+     doc1 = doc <+> ptext (sLit "(first round)")
+     doc2 = doc <+> ptext (sLit "(approximate)")
+     doc3 = doc <+> ptext (sLit "(disambiguate)")
++
++tc_simplify_top_test :: SDoc -> Bool -> [Inst] -> [Inst] -> TcM Bool
++tc_simplify_top_test doc interactive stack wanteds
++  = do	{ dflags <- getDOpts
++	; wanteds <- zonkInsts wanteds
++	; mapM_ zonkTopTyVar (varSetElems (tyVarsOfInsts wanteds))
++
++	; traceTc (text "tc_simplify_top_test 0: " <+> ppr wanteds)
++	; (irreds1, binds1) <- contextConstraintsCheckLoop doc1 stack wanteds
++--	; (irreds1, binds1) <- gentleInferLoop doc1 wanteds
++	; traceTc (text "tc_simplify_top_test  1: " <+> ppr irreds1)
++	; (irreds2, binds2) <- approximateImplications doc2 (\_ -> True) irreds1
++	; traceTc (text "tc_simplify_top_test  2: " <+> ppr irreds2)
++
++		-- Use the defaulting rules to do extra unification
++		-- NB: irreds2 are already zonked
++	; (irreds3, binds3) <- disambiguate doc3 interactive dflags irreds2
++
++  ; traceTc (text "tc_simplify_top_test done: " <+> ppr (null irreds3))
++
++  -- irred EqInsts are ok in context constraints.  the context has 
++  -- functional dependencies
++  ; return $ all isEqInst irreds3
++  -- ; return $ null irreds3 
++  }
++  where
++    doc1 = doc <+> ptext (sLit "(first round)")
++    doc2 = doc <+> ptext (sLit "(approximate)")
++    doc3 = doc <+> ptext (sLit "(disambiguate)")
+ \end{code}
+ 
+ If a dictionary constrains a type variable which is
+hunk ./compiler/typecheck/TcSimplify.lhs 3484
+ 
+ pprStack :: [Inst] -> SDoc
+ pprStack stack = vcat (map pprInstInFull stack)
++
++---------------------------- MATT: Context Constraints Test -----------------------
++anyM' :: (Monad m) => [m Bool] -> m Bool
++anyM' [] = return False
++anyM' (x:xs) =
++  do val <- x
++     if val then return True
++            else anyM' xs
++
++allM' :: (Monad m) => [m Bool] -> m Bool
++allM' [] = return True
++allM' (x:xs) =
++  do val <- x
++     if val then allM' xs
++            else return False
++
++applyContextConstraints :: Bool ->
++                           Inst -> 
++                           [Inst] ->
++                           [Inst] ->
++                           (InstEnv, InstEnv) -> 
++                           [Type] -> 
++                           ([(Instance,[Either TyVar Type])], [Instance]) -> 
++                           IOEnv (Env TcGblEnv TcLclEnv) ([(Instance,[Either TyVar Type])], [Instance])
++applyContextConstraints _ _ _ _ _ _ x@([],_) = return x
++applyContextConstraints force inst avails stack ies tys (ms,us) = 
++  do maybes <- mapM matchesContext ms
++     let ms' = catMaybes maybes
++     traceTc (text "MATT: applyContextConstraints" <+> 
++         vcat [text "tys" <+> ppr tys,
++               text "pred" <+> ppr inst,
++               text "matches" <+> ppr ms,
++               text "constrained" <+> ppr ms',
++               text "unifs" <+> ppr us])
++  
++     return (ms', us)
++  where
++    pop [] = []
++    pop (_:x) = x
++
++    matchesContext :: (Instance, [Either TyVar Type]) -> TcM (Maybe (Instance, [Either TyVar Type]))
++    matchesContext m@(match_inst, match_tvs) =
++        do {
++        ;(GenInst predInsts _) <- matchInst inst (instanceDFunId match_inst, match_tvs)
++        ;traceTc (text "MATT: matchesContext" <+>
++            vcat [text "inst" <+> ppr inst
++                 ,text "stack" <+> ppr stack
++                 ,text "tys" <+> ppr tys
++                 ,text ("tys struct: " ++ (unwords $ map tyStruct tys))
++                 ,text "matchTys" <+> ppr (instanceTypes match_inst)
++                 ,text ("matchTys struct: " ++ (unwords $ map tyStruct (instanceTypes match_inst)))
++                 ,text "matchTvs" <+> ppr match_tvs
++                 ,text "match instanceTyVars" <+> ppr (instanceTyVars match_inst)
++                 ,text "merged_tys" <+> ppr merged_tys
++                 ,text ("merged_tys: " ++ (unwords $ map tyStruct merged_tys))
++                 ,text "match" <+> ppr match_inst
++                 ,text "predInsts" <+> ppr predInsts
++                 ,text "theta tyVars" <+> ppr (tyVarsPreds theta)
++                 ])
++        ; do r <- matchPreds predInsts
++             return $ if r then (Just m) else Nothing
++        }
++      where (_, theta, _, _) = instanceHead match_inst
++            matchPreds :: [Inst] -> TcM Bool
++            matchPreds preds = do { 
++              ; looped <- isAvailList stack inst 
++              ; if looped 
++                  then return False
++                  else tcSimplifyTest (inst:stack) preds
++            }
++            
++            improved tys tys' = (countTyVars tys') < (countTyVars tys)
++            merged_tys = mergeTys tys $ instanceTypes match_inst
++
++            -- replace ty vars in match with ty var parameters (which we may have some preds for)
++            match_tvs' = map lookupTyVar match_tvs
++              where tvMap = mkTvMap $ zip (instanceTypes match_inst) tys
++                    lookupTyVar (Left tv) = 
++                        case tvLookupByName tv tvMap of
++                             Just (TyVarTy tv') -> Left tv'
++                             Just ty -> Right ty  -- is this right? maybe just keep tv
++                             Nothing -> Left tv
++
++                    lookupTyVar (Right ty@(TyVarTy tv)) = Right $ fromMaybe ty (tvLookupByName tv tvMap)
++                    lookupTyVar (Right ty) = Right ty
++
++            -- some pred (fundep) resolved a var!  update any references to that var elsewhere in the theta
++
++            mkTvMap :: [(Type,Type)] -> [(TyVar,Type)]
++            mkTvMap = mapMaybe toTvMapElem
++            toTvMapElem (TyVarTy tv, ty) = Just (tv,ty)
++            toTvMapElem _ = Nothing
++
++countTyVars :: [Type] -> Int
++countTyVars tys = 
++  sum $ map count tys
++  where count :: Type -> Int
++        count (TyVarTy _) = 1
++        count (AppTy ty1 ty2) = (count ty1) + (count ty2)
++        count (TyConApp _ tys') = countTyVars tys'
++        count (FunTy ty1 ty2) = (count ty1) + (count ty2)
++
++tyStruct :: Type -> [Char]
++tyStruct (TyVarTy _) = "TyVarTy"
++tyStruct (TyConApp _ tys) = "(TyConApp ? " ++ (show $ map tyStruct tys) ++ ")"
++tyStruct (AppTy l r) = "(AppTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
++tyStruct (FunTy l r) = "(FunTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
++-- map tyvars in tys1 to corresponding type or tyvar in tys2
++mergeTyMap :: [Type] -> [Type] -> [(TyVar,Type)]
++mergeTyMap tys1 tys2 = concat $ zipWith mapper tys1 tys2
++  where
++    mapper (TyVarTy tv) ty@(TyVarTy _) = [(tv,ty)]
++    mapper (TyVarTy tv) ty = [(tv,ty)]
++    mapper (TyConApp l1 [r1]) (TyConApp l2 [r2]) = (mapper (mkTyConTy l1) (mkTyConTy l2)) ++ (mapper r1 r2)
++    mapper (AppTy l1 r1) (TyConApp l2 [r2]) = (mapper l1 (mkTyConTy l2)) ++ (mapper r1 r2)
++    mapper (TyConApp l1 [r1]) (AppTy l2 r2) = (mapper (mkTyConTy l1) l2) ++ (mapper r1 r2)
++    mapper (AppTy l1 r1) (AppTy l2 r2) = (mapper l1 l2) ++ (mapper r1 r2)
++    mapper (FunTy l1 r1) (FunTy l2 r2) = (mapper l1 l2) ++ (mapper r1 r2)
++    mapper _ _ = []
++
++  
++{- for merging, two step process: 
++     1) map ty vars in match parameters to ty vars in declaration
++     2) map ty vars in declaration to types in match parameters
++   this solves the following case:
++     decl types: a a
++     match types: X b
++   the correct solution is: X X
++-}
++mergeTys l r = resolved
++  where fixedVars = mapTyVarsToTypesTypes (mergeTyMap l r) l
++        resolved = mapTyVarsToTypesTypes (mergeTyMap r fixedVars) fixedVars
++
++matchInst :: Inst -> (DFunId, [Either TyVar TcType]) -> TcM LookupInstResult
++matchInst (Dict {tci_pred=pred, tci_loc=loc}) (dfun_id, mb_inst_tys) = do
++    { use_stage <- getStage
++    ; checkWellStaged (ptext (sLit "instance for") <+> quotes (ppr pred))
++    		      (topIdLvl dfun_id) (thLevel use_stage)
++
++ 	-- It's possible that not all the tyvars are in
++	-- the substitution, tenv. For example:
++	--	instance C X a => D X where ...
++	-- (presumably there's a functional dependency in class C)
++	-- Hence mb_inst_tys :: Either TyVar TcType 
++
++--    ; let inst_tv (Left tv)  = do { tv' <- tcInstTyVar tv; return (mkTyVarTy tv') }
++--	  inst_tv (Right ty) = return ty
++--    ; tys <- mapM inst_tv mb_inst_tys
++      ; let toType (Left tv) = mkTyVarTy tv
++            toType (Right ty) = ty
++      ; let  tys = map toType mb_inst_tys
++    ; let
++    	(theta, _) = tcSplitPhiTy (applyTys (idType dfun_id) tys)
++	src_loc	   = instLocSpan loc
++	dfun	   = HsVar dfun_id
++    ; if null theta then
++        return (GenInst [] (L src_loc $ HsWrap (mkWpTyApps tys) dfun))
++      else do
++    { (dict_app, dicts) <- getLIE $ instCallDicts loc theta -- !!!
++    ; let co_fn = dict_app <.> mkWpTyApps tys
++    ; return (GenInst dicts (L src_loc $ HsWrap co_fn dfun))
++    }}
++
++lookupInstResultAvailP :: [Inst] -> LookupInstResult -> TcM Bool
++lookupInstResultAvailP avails (GenInst dicts _) =
++  do avails <- mapM (isAvailList avails) dicts
++     return $ and avails
++
++instMatchAvailP :: [Inst] ->
++                   Inst -> 
++                   (Instance, [Either TyVar TcType]) -> 
++                   IOEnv (Env TcGblEnv TcLclEnv) Bool
++instMatchAvailP avails inst (ispec, inst_tys) =
++  do match' <- matchInst inst (is_dfun ispec, inst_tys)
++     lookupInstResultAvailP avails match'
++     
++bestInstMatches :: [(Instance, [Either TyVar Type])] -> [(Instance, [Either TyVar Type])]
++bestInstMatches [] = []
++bestInstMatches [x] = [x]
++bestInstMatches xs = mostSpecificContexts $ mostSpecificParameters xs
++
++mostSpecificParameters xs = chooseMins $ (sortBy cmpParams) xs
++  where cmpParams l r = (params l) `compare` (params r)
++        params = length.snd
++        chooseMins [] = []
++        chooseMins [x] = [x]
++        chooseMins (x:xs) = x : filter (\m -> params m == params x) xs
++
++mostSpecificContexts [] = []
++mostSpecificContexts [x] = [x]
++mostSpecificContexts (x:xs) = collectMostSpecificContexts [] x xs 
++  where
++    collectMostSpecificContexts outs x []
++      | isMostSpecificContext x outs
++        = x:outs
++      | otherwise
++        = outs
++
++    collectMostSpecificContexts outs x ins@(x':ins')
++      | isMostSpecificContext x (outs ++ ins)
++        = collectMostSpecificContexts (x:outs) x' ins'
++      | otherwise
++        = collectMostSpecificContexts outs x' ins'
++  
++thetaProperSubset :: ThetaType -> ThetaType -> Bool
++thetaProperSubset subTheta superTheta =
++  -- NO pred exists strictly more times in sub than in super
++  -- SOME pred exists less times in sub than in super 
++
++  (not $ any (hasLess super sub) combined) && (any (hasLess sub super) combined)
++
++  where hasLess t1 t2 c = (count c t1) < (count c t2)
++
++        cmpPred (ClassP c1 _) (ClassP c2 _) = c1 == c2
++        cmpPred _ _ = False -- TODO: handle other predicates
++
++        count _ [] = 0
++        count a (b:bs) | a `cmpPred` b = 1 + (count a bs)
++                       | otherwise     = count a bs
++
++        sub = filter isClassPred subTheta
++        super = filter isClassPred superTheta
++
++        combined = sub ++ super
++
++isMoreSpecificInst :: (Instance, [Either TyVar Type]) -> (Instance, [Either TyVar Type]) -> Bool
++isMoreSpecificInst x y 
++    = not $ thetaProperSubset (theta x) (theta y)
++  where theta = instanceTheta.fst
++
++instanceTheta :: Instance -> ThetaType
++instanceTheta = (\(_,x,_,_) -> x) . instanceHead 
++instanceTyVars :: Instance -> [TyVar]
++instanceTyVars = (\(x,_,_,_) -> x) . instanceHead
++instanceTypes :: Instance -> [Type]
++instanceTypes = (\(_,_,_,x) -> x) . instanceHead
++instanceClass :: Instance -> Class
++instanceClass = (\(_,_,x,_) -> x) . instanceHead
++
++isMostSpecificContext :: (Instance, [Either TyVar Type])
++                      -> [(Instance, [Either TyVar Type])]
++                      -> Bool
++isMostSpecificContext x xs 
++    = all (isMoreSpecificInst x) xs
++
++zipWith' :: (a -> a1 -> Bool) -> [a] -> [a1] -> Bool
++zipWith' f x y
++  | eqLength x y
++    = and $ zipWith f x y
++  | otherwise
++    = False
++  where eqLength x y = (length x) == (length y)
++
++tcEqTheta = zipWith' eqVarNamesPred
++
++eqVarNamesPred :: PredType -> PredType -> Bool
++eqVarNamesPred (ClassP c1 vs1) (ClassP c2 vs2) 
++  = c1 == c2 && vs1 `eqVarNamesTypes` vs2
++eqVarNamesPred _ _ = False
++
++eqVarNamesTypes = zipWith' eqVarNamesType
++
++eqVarNamesType (TyVarTy tv1) (TyVarTy tv2) = tv1 `eqVarNamesVar` tv2
++eqVarNamesType (AppTy f1 a1) (AppTy f2 a2) = f1 `eqVarNamesType` f2 && a1 `eqVarNamesType` a2
++eqVarNamesType (TyConApp c1 tys1) (TyConApp c2 tys2) = c1 == c2 && tys1 `eqVarNamesTypes` tys2
++eqVarNamesType (FunTy f1 a1) (FunTy f2 a2) = f1 `eqVarNamesType` f2 && a1 `eqVarNamesType` a2
++eqVarNamesType (ForAllTy tv1 ty1) (ForAllTy tv2 ty2) = tv1 `eqVarNamesVar` tv2 && ty1 `eqVarNamesType` ty2
++eqVarNamesType (PredTy p1) (PredTy p2) = p1 `eqVarNamesPred` p2
++eqVarNamesType _ _ = False
++
++eqVarNamesVar x y = (getName x) == (getName y)
++
++checkAvail avails inst (insts,unifs) = 
++  do insts' <- filterM (instMatchAvailP avails inst) insts
++     return (insts', unifs)
++
++-- TODO: make sure TYPES are equal too!
++tcEqInstMatch (i1, t1) (i2, t2) 
++  | tcEqInstTypes t1 t2 && tcEqTypes (instanceTypes i1) (instanceTypes i2)
++    = case mkInstTypeMap i1 i2 of
++      Nothing -> False
++      (Just tvMap) -> tcEqTheta theta1 theta2
++        where theta1 = mapTyVarsPreds tvMap $ instanceTheta i1
++              theta2 = instanceTheta i2
++  | otherwise
++    = False
++
++mapTyVarsToTypesInsts tvMap = map (mapTyVarsToTypesInst tvMap)
++mapTyVarsToTypesInst tvMap inst@(Dict {tci_pred=pred}) = inst { tci_pred = mapTyVarsToTypesPred tvMap pred }
++
++mapTyVarsToTypesPreds tvMap = map (mapTyVarsToTypesPred tvMap) 
++mapTyVarsToTypesPred tvMap (ClassP cls tys) = ClassP cls $ mapTyVarsToTypesTypes tvMap tys
++
++mapTyVarsToTypesTypes :: [(TyVar,Type)] -> [Type] -> [Type]
++mapTyVarsToTypesTypes tvMap tys = map (mapTyVarsToTypesType tvMap) tys
++
++mapTyVarsToTypesType :: [(TyVar,Type)] -> Type -> Type
++mapTyVarsToTypesType tvMap (TyVarTy tv) = mapTyVarType tvMap tv
++mapTyVarsToTypesType tvMap (AppTy ty1 ty2) = AppTy (mapTyVarsToTypesType tvMap ty1) (mapTyVarsToTypesType tvMap ty2)
++mapTyVarsToTypesType tvMap (TyConApp tc tys) = TyConApp tc $ mapTyVarsToTypesTypes tvMap tys
++mapTyVarsToTypesType tvMap (FunTy ty1 ty2) = FunTy (mapTyVarsToTypesType tvMap ty1) (mapTyVarsToTypesType tvMap ty2)
++--mapTyVarsToTypesType tvMap (ForAllTy tv ty) = ForAllTy (mapTyVar tvMap tv) (mapTyVarsToTypesType tvMap ty)
++mapTyVarsToTypesType tvMap (PredTy pred) = PredTy $ mapTyVarsToTypesPred tvMap pred
++
++mapTyVarType :: [(TyVar, Type)] -> TyVar -> Type
++mapTyVarType tvMap tv = fromMaybe (TyVarTy tv) $ tvLookupByName tv tvMap 
++
++updateTvMap :: [(TyVar, a)] -> [(TyVar, a)] -> [(TyVar, a)]
++updateTvMap tvMap updates
++  = foldr update tvMap updates
++  where update up@(v1,val) (e@(v2,_):elems) 
++               | v1 `eqVarNamesVar` v2 = (v1,val):elems
++               | otherwise = e:(update up elems)
++
++
++mapTyVarsPreds tvMap = map (mapTyVarsPred tvMap) 
++mapTyVarsPred tvMap (ClassP cls tys) = ClassP cls $ mapTyVarsTypes tvMap tys
++mapTyVarsPred tvMap (EqPred ty1 ty2) = EqPred (mapTyVarsType tvMap ty1) (mapTyVarsType tvMap ty2)
++
++mapTyVarsTypes :: [(TyVar,TyVar)] -> [Type] -> [Type]
++mapTyVarsTypes tvMap tys = map (mapTyVarsType tvMap) tys
++
++mapTyVarsType tvMap (TyVarTy tv) = TyVarTy $ mapTyVar tvMap tv
++mapTyVarsType tvMap (AppTy ty1 ty2) = AppTy (mapTyVarsType tvMap ty1) (mapTyVarsType tvMap ty2)
++mapTyVarsType tvMap (TyConApp tc tys) = TyConApp tc $ mapTyVarsTypes tvMap tys
++mapTyVarsType tvMap (FunTy ty1 ty2) = FunTy (mapTyVarsType tvMap ty1) (mapTyVarsType tvMap ty2)
++mapTyVarsType tvMap (ForAllTy tv ty) = ForAllTy (mapTyVar tvMap tv) (mapTyVarsType tvMap ty)
++mapTyVarsType tvMap (PredTy pred) = PredTy $ mapTyVarsPred tvMap pred
++
++tyVarsTypes :: [Type] -> [TyVar]
++tyVarsTypes tys = tvUnique $ foldr (++) [] $ map tyVarsType tys
++
++tvUnique :: [TyVar] -> [TyVar]
++tvUnique [] = []
++tvUnique (v:vs) | isJust $ find (eqVarNamesVar v) vs = tvUnique vs
++              | otherwise = v:(tvUnique vs)
++
++tyVarsType :: Type -> [TyVar]
++tyVarsType (TyVarTy tv) = [tv]
++tyVarsType (AppTy ty1 ty2) = tyVarsTypes [ty1,ty2]
++tyVarsType (TyConApp _ tys) = tyVarsTypes tys
++tyVarsType (FunTy ty1 ty2) = tyVarsTypes [ty1,ty2]
++tyVarsType (PredTy pred) = tyVarsPred pred
++
++tyVarsPreds = concatMap tyVarsPred
++
++tyVarsPred :: PredType -> [TyVar]
++tyVarsPred (ClassP _ tys) = tyVarsTypes tys
++tyVarsPred (EqPred ty1 ty2) = tyVarsTypes [ty1, ty2]
++
++tvLookupByName :: TyVar -> [(TyVar, a)] -> Maybe a
++tvLookupByName tv1 tvMap = find (\(tv2,_) -> eqVarNamesVar tv1 tv2) tvMap >>= Just . snd
++
++tyVarsToTypes :: [(TyVar, Type)] -> Type -> Type
++tyVarsToTypes tvMap ty@(TyVarTy tv)
++  = case tvLookupByName tv tvMap of
++         Nothing  -> ty
++         Just ty' -> ty'
++tyVarsToTypes tvMap (AppTy ty1 ty2) = AppTy (tyVarsToTypes tvMap ty1) (tyVarsToTypes tvMap ty2)
++tyVarsToTypes tvMap (TyConApp tc tys) = TyConApp tc $ map (tyVarsToTypes tvMap) tys
++tyVarsToTypes tvMap (FunTy ty1 ty2) = FunTy (tyVarsToTypes tvMap ty1) (tyVarsToTypes tvMap ty2)
++tyVarsToTypes tvMap (ForAllTy tv ty) = undefined
++tyVarsToTypes tvMap (PredTy pred) = PredTy $ tyVarsToTypesPred tvMap pred
++
++tyVarsToTypesPred :: [(TyVar, Type)] -> PredType -> PredType
++tyVarsToTypesPred tvMap (ClassP cls tys) = ClassP cls $ map (tyVarsToTypes tvMap) tys
++
++mapTyVar :: [(TyVar, TyVar)] -> TyVar -> TyVar
++mapTyVar tvMap tv = fromMaybe tv $ tvLookupByName tv tvMap 
++
++mkInstTypeMap :: Instance -> Instance -> Maybe [(TyVar, TyVar)]
++mkInstTypeMap i1 i2
++  | (length tvs1) == (length tvs2)
++    = Just $ filter (\(v1, v2) -> not $ eqVarNamesVar v1 v2) $ zip tvs1 tvs2
++  | otherwise
++    = Nothing
++  where tvs1 = instanceTyVars i1
++        tvs2 = instanceTyVars i2
++
++-- should always be the same length
++tcEqInstTypes [] []         = True
++tcEqInstTypes (x:xs) (y:ys) = tcEqInstType x y && tcEqInstTypes xs ys
++tcEqInstTypes _ _           = False
++
++tcEqInstType (Left _) (Right _) = False
++tcEqInstType (Right _) (Left _) = False
++tcEqInstType (Left _) (Left _) = True
++tcEqInstType (Right ty1) (Right ty2) = tcEqType ty1 ty2
++
++
++removeDuplicates :: [(Instance, [Either TyVar TcType])] -> [(Instance, [Either TyVar TcType])]
++removeDuplicates [] = []
++removeDuplicates [a] = [a]
++removeDuplicates (a:as)
++  | isDuplicate a = removeDuplicates as
++  | otherwise     = a:(removeDuplicates as)
++  where isDuplicate a = isJust $ find (tcEqInstMatch a) as 
++
++-- lookupUnif :: Instance -> [(Instance, [Either TyVar TcType])]
++lookupUnif inst_envs unif = 
++  lookupInstEnv inst_envs cls tys
++  -- return found
++  where tys = instanceTypes unif
++        cls = instanceClass unif
++        -- ([found],[]) = lookupInstEnv inst_envs cls tys
++
++lookupPredChoices :: Bool -> [Inst] -> [Inst] -> Inst -> TcM [(Instance, [Either TyVar TcType])]
++lookupPredChoices force avails stack inst@(Dict {tci_pred = pred@(ClassP clas tys)})
++  = do { ; eps     <- getEps
++        ; tcg_env <- getGblEnv
++        ; let inst_envs = (eps_inst_env eps, tcg_inst_env tcg_env)
++        ; let insts = lookupInstEnv inst_envs clas tys 
++        ; traceTc (text "MATT: STACK" <+> ppr stack)
++        ; let inst_matches = fst insts
++        ; ASSERT( and $ map ((\x -> tcEqInstTypes x x).snd) inst_matches)
++
++        -- TODO: check for ContextConstraints flag
++        case force of
++            True -> traceTc (text "MATT: LOOKUP (FORCE)" <+> ppr pred)
++            False -> traceTc (text "MATT: LOOKUP" <+> ppr pred)
++        ; traceTc (text "MATT: MATCHES" <+> ppr inst_matches)
++        ; constrained <- applyContextConstraints force inst avails stack inst_envs tys insts 
++        ; traceTc (text "MATT: CONSTRAINED" <+> ppr constrained)
++        ; avail_insts <- checkAvail avails inst insts
++        ; traceTc (text "MATT: AVAIL INSTS" <+> (ppr avail_insts))
++        ; let best_avail = (\(x,y) -> (bestInstMatches x, y)) avail_insts
++        ; traceTc (text "MATT: BEST AVAIL INSTS" <+> (ppr best_avail))
++        ; let both_dupes = (\(x1,y1) (x2,y2) -> ((x1++x2),y1++y2)) avail_insts constrained
++        ; traceTc (text "MATT: BOTH WORLDS WITH DUPES" <+> (ppr both_dupes))
++        ; let both = (\(x1,y1) (x2,y2) -> (removeDuplicates (x1++x2), (y1++y2))) avail_insts constrained
++        ; traceTc (text "MATT: BOTH WORLDS" <+> (ppr both))
++        ; let best_both = (\(x,y) -> (bestInstMatches x, y)) both
++        ; traceTc (text "MATT: BEST OF BOTH WORLDS" <+> (ppr best_both))
++        ; let (best_matches, best_unifs) = best_both
++        ; let best_possible = filter (flip isMostSpecificContext inst_matches) best_matches
++        ; traceTc (text "MATT: BEST POSSIBLE" <+> (ppr best_possible))
++
++        -- TODO: if adopting a unif, make sure the type corresponding to each typevar we're
++        -- looking for matches the known contexts.  That should help constrain multiple
++        -- unifs as well
++        ; let all_unifs = map (lookupUnif inst_envs) best_unifs
++        ; traceTc (text "MATT: ALL UNIFS" <+> (ppr all_unifs))
++        ; let unif_matches = removeDuplicates $ foldr (++) [] $ map fst all_unifs 
++        ; traceTc (text "MATT: UNIF MATCHES" <+> (ppr unif_matches))
++
++        -- TODO: to constrain unifs, merge tys with instance tys (if instance has a type for a tyvar in tys,
++        -- use it.  if tys has a type for a tyvar in instance, use that
++        ; constrained_unifs <- applyContextConstraints force inst avails stack inst_envs tys (unif_matches, [])
++        ; traceTc (text "MATT: CONSTRAINED UNIFS" <+> (ppr constrained_unifs))
++        ; let best_unifs = bestInstMatches $ fst constrained_unifs
++        ; traceTc (text "MATT: BEST UNIFS" <+> (ppr best_unifs))
++        ; let best_unifs_possible = filter (flip isMostSpecificContext unif_matches) best_unifs
++        ; traceTc (text "MATT: BEST POSSIBLE" <+> (ppr best_unifs_possible))
++
++        ; let allTypes = 0 == countTyVars tys
++        ; let someTypes = 0 < countTyVars tys
++
++        -- if there are better potential matches, delay deciding as long as possible.
++        -- if there are no type vars in the lookupPred, waiting won't help, so decide now
++        -- if force, decide now
++        ; let decide = allTypes || force
++
++
++        ; let final' = if (null best_matches) && someTypes
++                               then if decide
++                                       then ((best_unifs)::([(Instance, [Either TyVar Type])]))
++                                       else ((best_unifs_possible)::([(Instance, [Either TyVar Type])]))
++                               else if decide 
++                                       -- time to decide. pick the best match(es).
++                                       then best_matches
++                                       -- still have time to see if we get a better match.
++                                       -- if there is no better match, can decide now
++                                       else best_possible
++        ; case force of
++            True -> traceTc (text "MATT: LOOKUP DONE (FORCE)" <+> 
++                        vcat [text "pred" <+> ppr pred,
++                              text "final" <+> ppr final'])
++            False -> traceTc (text "MATT: LOOKUP DONE" <+> 
++                        vcat [text "pred" <+> ppr pred,
++                              text "final" <+> ppr final'])
++        ; traceTc (text "MATT: DONE: " <+> (ppr final'))
++        ; return final'
++      }
++
++lookupPred :: Bool -> [Inst] -> [Inst] -> Inst -> TcM (Maybe (DFunId, [Either TyVar TcType]))
++-- Look up a class constraint in the instance environment
++lookupPred force avails stack inst@(Dict {tci_pred = pred@(ClassP clas tys)})
++  = do	{ 
++  ; enabled <- contextConstraintsEnabled
++  ; final <- if not enabled 
++      then do {
++        ; eps     <- getEps
++        ; tcg_env <- getGblEnv
++        ; let inst_envs = (eps_inst_env eps, tcg_inst_env tcg_env)
++        ; return $ lookupInstEnv inst_envs clas tys
++      }
++      else do {
++        ; choices <- lookupPredChoices force avails stack inst
++        ; return (choices, [])
++      }
++	; case final of {
++	    ([(ispec, inst_tys)], []) 
++		-> do	{ let dfun_id = is_dfun ispec
++			; traceTc (text "lookupInst success" <+> 
++				   vcat [text "dict" <+> ppr pred, 
++				         text "witness" <+> ppr dfun_id
++					 <+> ppr (idType dfun_id) ])
++				-- Record that this dfun is needed
++        -- only if at the top level.  otherwise, we just checking a dependency.
++        -- we may not need it, i.e. not all deps met, better match is found
++			; if (null stack) then record_dfun_usage dfun_id
++          else return ()
++			; return (Just (dfun_id, inst_tys)) } ;
++
++     	    (matches, unifs)
++		-> do	{ traceTc (text "lookupInst fail" <+> 
++				   vcat [text "dict" <+> ppr pred,
++				   	 text "matches" <+> ppr matches,
++				   	 text "unifs" <+> ppr unifs])
++		-- In the case of overlap (multiple matches) we report
++		-- NoInstance here.  That has the effect of making the 
++		-- context-simplifier return the dict as an irreducible one.
++		-- Then it'll be given to addNoInstanceErrs, which will do another
++		-- lookupInstEnv to get the detailed info about what went wrong.
++			; return Nothing }
++	}}
++
++lookupPred _ _ _ (Dict {tci_pred = (IParam {})}) = return Nothing	-- Implicit parameters
++lookupPred _ _ _ (Dict {tci_pred = (EqPred {})}) = panic "lookupPred EqPred"
++
++data LookupInstResult
++  = NoInstance
++  | GenInst [Inst] (LHsExpr TcId)	-- The expression and its needed insts
++
++lookupSimpleInst :: Bool -> [Inst] -> [Inst] -> Inst -> TcM LookupInstResult
++-- This is "simple" in that it returns NoInstance for implication constraints
++
++-- It's important that lookupInst does not put any new stuff into
++-- the LIE.  Instead, any Insts needed by the lookup are returned in
++-- the LookupInstResult, where they can be further processed by tcSimplify
++
++lookupSimpleInst _ _ _ (EqInst {}) = return NoInstance
++
++--------------------- Implications ------------------------
++lookupSimpleInst _ _ _ (ImplicInst {}) = return NoInstance
++
++--------------------- Methods ------------------------
++lookupSimpleInst _ _ _ (Method {tci_oid = id, tci_tys = tys, tci_theta = theta, tci_loc = loc})
++  = do	{ (dict_app, dicts) <- getLIE $ instCallDicts loc theta
++	; let co_fn = dict_app <.> mkWpTyApps tys
++	; return (GenInst dicts (L span $ HsWrap co_fn (HsVar id))) }
++  where
++    span = instLocSpan loc
++
++--------------------- Literals ------------------------
++-- Look for short cuts first: if the literal is *definitely* a 
++-- int, integer, float or a double, generate the real thing here.
++-- This is essential (see nofib/spectral/nucleic).
++-- [Same shortcut as in newOverloadedLit, but we
++--  may have done some unification by now] 		
++
++lookupSimpleInst _ _ _ (LitInst { tci_lit = lit@OverLit { ol_val = lit_val
++					          , ol_rebindable = rebindable }
++			  , tci_ty = ty, tci_loc = iloc})
++  | debugIsOn && rebindable = panic "lookupSimpleInst" -- A LitInst invariant
++  | Just witness <- shortCutLit lit_val ty
++  = do	{ let lit' = lit { ol_witness = witness, ol_type = ty }
++	; return (GenInst [] (L loc (HsOverLit lit'))) }
++
++  | otherwise
++  = do	{ hs_lit <- mkOverLit lit_val
++	; from_thing <- tcLookupId (hsOverLitName lit_val)
++		  -- Not rebindable, so hsOverLitName is the right thing
++    	; method_inst <- tcInstClassOp iloc from_thing [ty]
++	; let witness = HsApp (L loc (HsVar (instToId method_inst))) 
++			      (L loc (HsLit hs_lit))
++	      lit' = lit { ol_witness = witness, ol_type = ty }
++	; return (GenInst [method_inst] (L loc (HsOverLit lit'))) }
++  where
++    loc = instLocSpan iloc
++
++--------------------- Dictionaries ------------------------
++lookupSimpleInst force stack avails dct@(Dict {tci_pred = pred, tci_loc = loc})
++  = do 	{ mb_result <- lookupPred force avails stack dct
++	; case mb_result of {
++	    Nothing -> return NoInstance ;
++	    Just (dfun_id, mb_inst_tys) -> do
++
++    { use_stage <- getStage
++    ; checkWellStaged (ptext (sLit "instance for") <+> quotes (ppr pred))
++    		      (topIdLvl dfun_id) (thLevel use_stage)
++
++ 	-- It's possible that not all the tyvars are in
++	-- the substitution, tenv. For example:
++	--	instance C X a => D X where ...
++	-- (presumably there's a functional dependency in class C)
++	-- Hence mb_inst_tys :: Either TyVar TcType 
++
++    ; let inst_tv (Left tv)  = do { tv' <- tcInstTyVar tv; return (mkTyVarTy tv') }
++	  inst_tv (Right ty) = return ty
++    ; tys <- mapM inst_tv mb_inst_tys
++    ; let
++    	(theta, _) = tcSplitPhiTy (applyTys (idType dfun_id) tys)
++	src_loc	   = instLocSpan loc
++	dfun	   = HsVar dfun_id
++    ; traceTc (text "MATT: lookupSimpleInst result theta" <+> ppr theta)
++    ; if null theta then
++        return (GenInst [] (L src_loc $ HsWrap (mkWpTyApps tys) dfun))
++      else do
++    { (dict_app, dicts) <- getLIE $ instCallDicts loc theta -- !!!
++    ; let co_fn = dict_app <.> mkWpTyApps tys
++    ; return (GenInst dicts (L src_loc $ HsWrap co_fn dfun))
++    }}}}
++
++---------------
++record_dfun_usage :: Id -> TcRn ()
++record_dfun_usage dfun_id 
++  = do	{ hsc_env <- getTopEnv
++	; let  dfun_name = idName dfun_id
++	       dfun_mod  = ASSERT( isExternalName dfun_name ) 
++	         	   nameModule dfun_name
++	; if isInternalName dfun_name ||    -- Internal name => defined in this module
++	     modulePackageId dfun_mod /= thisPackage (hsc_dflags hsc_env)
++	  then return () -- internal, or in another package
++	   else do { tcg_env <- getGblEnv
++	  	   ; updMutVar (tcg_inst_uses tcg_env)
++			       (`addOneToNameSet` idName dfun_id) }}
++
++
++contextConstraintsEnabled :: TcM Bool
++contextConstraintsEnabled 
++  = do { dflags <- getDOpts
++       ; return $ dopt Opt_ContextConstraints dflags
++  }
++
++isAvailList :: [Inst] -> Inst -> TcM Bool
++isAvailList avails inst 
++  = do traceTc (text "MATT: isAvail" <+> 
++          vcat [text "inst" <+> (ppr inst)
++               ,text "avails" <+> ppr avails
++               ])
++       let res = find (==inst) avails
++       case res of 
++            Just _ ->
++              do traceTc (text "MATT: isAvail: YES" <+> (ppr inst))
++                 return True
++            Nothing -> 
++              do traceTc (text "MATT: isAvail: NO" <+> (ppr inst))
++                 return False
++
++
+ \end{code}
+}
+[Remove unused declarations
+matt@softmechanics.net**20100618201518
+ Ignore-this: 1e32ef3e781378e42c81c1633fc50efe
+] {
+hunk ./compiler/typecheck/TcSimplify.lhs 72
+ import TcHsSyn
+ import Module
+ import DynFlags
++import UniqSet (sizeUniqSet)
+ \end{code}
+ 
+ 
+hunk ./compiler/typecheck/TcSimplify.lhs 1080
+ -}
+ contextConstraintsCheckLoop :: SDoc
+ 	     -> [Inst]
++	     -> [Inst]
+        -> [Inst]
+ 	     -> TcM ([Inst], TcDictBinds)
+hunk ./compiler/typecheck/TcSimplify.lhs 1083
+-contextConstraintsCheckLoop doc stack wanteds
++contextConstraintsCheckLoop doc stack givens wanteds
+   = do { (irreds,binds) <- forceCheckLoop env wanteds
+        ; return (irreds,binds)
+        }
+hunk ./compiler/typecheck/TcSimplify.lhs 1090
+   where
+     try_me _ = ReduceMe
+     env = RedEnv { red_doc = doc, red_try_me = try_me,
+-	     red_givens = [], 
++	     red_givens = givens, 
+ 	     red_stack = (0,[]),
+        red_ctx_stack = stack,
+ 	     red_improve = True }	
+hunk ./compiler/typecheck/TcSimplify.lhs 2909
+   where 
+     doc = text "tcSimplifyInteractive"
+ 
+-tcSimplifyTest :: [Inst] -> [Inst] -> TcM Bool
+-tcSimplifyTest stack wanteds
+-  = tc_simplify_top_test doc True stack wanteds
++tcSimplifyTest :: [Inst] -> [Inst] -> [Inst] -> TcM Bool
++tcSimplifyTest _ _ [] = return True
++tcSimplifyTest stack givens wanteds
++  = tc_simplify_top_test doc True stack givens wanteds
+   where 
+     doc = text "tcSimplifyTest"
+ 
+hunk ./compiler/typecheck/TcSimplify.lhs 2950
+     doc2 = doc <+> ptext (sLit "(approximate)")
+     doc3 = doc <+> ptext (sLit "(disambiguate)")
+ 
+-tc_simplify_top_test :: SDoc -> Bool -> [Inst] -> [Inst] -> TcM Bool
+-tc_simplify_top_test doc interactive stack wanteds
++tc_simplify_top_test :: SDoc -> Bool -> [Inst] -> [Inst] -> [Inst] -> TcM Bool
++tc_simplify_top_test doc interactive stack givens wanteds
+   = do	{ dflags <- getDOpts
+ 	; wanteds <- zonkInsts wanteds
+ 	; mapM_ zonkTopTyVar (varSetElems (tyVarsOfInsts wanteds))
+hunk ./compiler/typecheck/TcSimplify.lhs 2957
+ 
+ 	; traceTc (text "tc_simplify_top_test 0: " <+> ppr wanteds)
+-	; (irreds1, binds1) <- contextConstraintsCheckLoop doc1 stack wanteds
++	; (irreds1, binds1) <- contextConstraintsCheckLoop doc1 stack givens wanteds
+ --	; (irreds1, binds1) <- gentleInferLoop doc1 wanteds
+ 	; traceTc (text "tc_simplify_top_test  1: " <+> ppr irreds1)
+ 	; (irreds2, binds2) <- approximateImplications doc2 (\_ -> True) irreds1
+hunk ./compiler/typecheck/TcSimplify.lhs 3489
+ pprStack stack = vcat (map pprInstInFull stack)
+ 
+ ---------------------------- MATT: Context Constraints Test -----------------------
+-anyM' :: (Monad m) => [m Bool] -> m Bool
+-anyM' [] = return False
+-anyM' (x:xs) =
+-  do val <- x
+-     if val then return True
+-            else anyM' xs
+-
+-allM' :: (Monad m) => [m Bool] -> m Bool
+-allM' [] = return True
+-allM' (x:xs) =
+-  do val <- x
+-     if val then allM' xs
+-            else return False
+-
+-applyContextConstraints :: Bool ->
+-                           Inst -> 
++applyContextConstraints :: Inst -> 
+                            [Inst] ->
+                            [Inst] ->
+hunk ./compiler/typecheck/TcSimplify.lhs 3492
+-                           (InstEnv, InstEnv) -> 
+                            [Type] -> 
+                            ([(Instance,[Either TyVar Type])], [Instance]) -> 
+                            IOEnv (Env TcGblEnv TcLclEnv) ([(Instance,[Either TyVar Type])], [Instance])
+hunk ./compiler/typecheck/TcSimplify.lhs 3495
+-applyContextConstraints _ _ _ _ _ _ x@([],_) = return x
+-applyContextConstraints force inst avails stack ies tys (ms,us) = 
++applyContextConstraints _ _ _ _ x@([],_) = return x
++applyContextConstraints inst stack avails tys (ms,us) = 
+   do maybes <- mapM matchesContext ms
+      let ms' = catMaybes maybes
+      traceTc (text "MATT: applyContextConstraints" <+> 
+hunk ./compiler/typecheck/TcSimplify.lhs 3508
+   
+      return (ms', us)
+   where
+-    pop [] = []
+-    pop (_:x) = x
+-
+     matchesContext :: (Instance, [Either TyVar Type]) -> TcM (Maybe (Instance, [Either TyVar Type]))
+     matchesContext m@(match_inst, match_tvs) =
+         do {
+hunk ./compiler/typecheck/TcSimplify.lhs 3515
+         ;traceTc (text "MATT: matchesContext" <+>
+             vcat [text "inst" <+> ppr inst
+                  ,text "stack" <+> ppr stack
++                 ,text "avails" <+> ppr avails
+                  ,text "tys" <+> ppr tys
+                  ,text ("tys struct: " ++ (unwords $ map tyStruct tys))
+                  ,text "matchTys" <+> ppr (instanceTypes match_inst)
+hunk ./compiler/typecheck/TcSimplify.lhs 3522
+                  ,text ("matchTys struct: " ++ (unwords $ map tyStruct (instanceTypes match_inst)))
+                  ,text "matchTvs" <+> ppr match_tvs
+                  ,text "match instanceTyVars" <+> ppr (instanceTyVars match_inst)
+-                 ,text "merged_tys" <+> ppr merged_tys
+-                 ,text ("merged_tys: " ++ (unwords $ map tyStruct merged_tys))
+                  ,text "match" <+> ppr match_inst
+                  ,text "predInsts" <+> ppr predInsts
+                  ,text "theta tyVars" <+> ppr (tyVarsPreds theta)
+hunk ./compiler/typecheck/TcSimplify.lhs 3535
+               ; looped <- isAvailList stack inst 
+               ; if looped 
+                   then return False
+-                  else tcSimplifyTest (inst:stack) preds
++                  else tcSimplifyTest (inst:stack) avails preds
+             }
+hunk ./compiler/typecheck/TcSimplify.lhs 3537
+-            
+-            improved tys tys' = (countTyVars tys') < (countTyVars tys)
+-            merged_tys = mergeTys tys $ instanceTypes match_inst
+-
+-            -- replace ty vars in match with ty var parameters (which we may have some preds for)
+-            match_tvs' = map lookupTyVar match_tvs
+-              where tvMap = mkTvMap $ zip (instanceTypes match_inst) tys
+-                    lookupTyVar (Left tv) = 
+-                        case tvLookupByName tv tvMap of
+-                             Just (TyVarTy tv') -> Left tv'
+-                             Just ty -> Right ty  -- is this right? maybe just keep tv
+-                             Nothing -> Left tv
+-
+-                    lookupTyVar (Right ty@(TyVarTy tv)) = Right $ fromMaybe ty (tvLookupByName tv tvMap)
+-                    lookupTyVar (Right ty) = Right ty
+-
+-            -- some pred (fundep) resolved a var!  update any references to that var elsewhere in the theta
+-
+-            mkTvMap :: [(Type,Type)] -> [(TyVar,Type)]
+-            mkTvMap = mapMaybe toTvMapElem
+-            toTvMapElem (TyVarTy tv, ty) = Just (tv,ty)
+-            toTvMapElem _ = Nothing
+ 
+ countTyVars :: [Type] -> Int
+hunk ./compiler/typecheck/TcSimplify.lhs 3539
+-countTyVars tys = 
+-  sum $ map count tys
+-  where count :: Type -> Int
+-        count (TyVarTy _) = 1
+-        count (AppTy ty1 ty2) = (count ty1) + (count ty2)
+-        count (TyConApp _ tys') = countTyVars tys'
+-        count (FunTy ty1 ty2) = (count ty1) + (count ty2)
++countTyVars = sizeUniqSet . tcTyVarsOfTypes
+ 
+ tyStruct :: Type -> [Char]
+ tyStruct (TyVarTy _) = "TyVarTy"
+hunk ./compiler/typecheck/TcSimplify.lhs 3546
+ tyStruct (TyConApp _ tys) = "(TyConApp ? " ++ (show $ map tyStruct tys) ++ ")"
+ tyStruct (AppTy l r) = "(AppTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
+ tyStruct (FunTy l r) = "(FunTy (" ++ tyStruct l ++ ") (" ++ tyStruct r ++ "))"
+--- map tyvars in tys1 to corresponding type or tyvar in tys2
+-mergeTyMap :: [Type] -> [Type] -> [(TyVar,Type)]
+-mergeTyMap tys1 tys2 = concat $ zipWith mapper tys1 tys2
+-  where
+-    mapper (TyVarTy tv) ty@(TyVarTy _) = [(tv,ty)]
+-    mapper (TyVarTy tv) ty = [(tv,ty)]
+-    mapper (TyConApp l1 [r1]) (TyConApp l2 [r2]) = (mapper (mkTyConTy l1) (mkTyConTy l2)) ++ (mapper r1 r2)
+-    mapper (AppTy l1 r1) (TyConApp l2 [r2]) = (mapper l1 (mkTyConTy l2)) ++ (mapper r1 r2)
+-    mapper (TyConApp l1 [r1]) (AppTy l2 r2) = (mapper (mkTyConTy l1) l2) ++ (mapper r1 r2)
+-    mapper (AppTy l1 r1) (AppTy l2 r2) = (mapper l1 l2) ++ (mapper r1 r2)
+-    mapper (FunTy l1 r1) (FunTy l2 r2) = (mapper l1 l2) ++ (mapper r1 r2)
+-    mapper _ _ = []
+-
+-  
+-{- for merging, two step process: 
+-     1) map ty vars in match parameters to ty vars in declaration
+-     2) map ty vars in declaration to types in match parameters
+-   this solves the following case:
+-     decl types: a a
+-     match types: X b
+-   the correct solution is: X X
+--}
+-mergeTys l r = resolved
+-  where fixedVars = mapTyVarsToTypesTypes (mergeTyMap l r) l
+-        resolved = mapTyVarsToTypesTypes (mergeTyMap r fixedVars) fixedVars
+ 
+ matchInst :: Inst -> (DFunId, [Either TyVar TcType]) -> TcM LookupInstResult
+ matchInst (Dict {tci_pred=pred, tci_loc=loc}) (dfun_id, mb_inst_tys) = do
+hunk ./compiler/typecheck/TcSimplify.lhs 3598
+ mostSpecificParameters xs = chooseMins $ (sortBy cmpParams) xs
+   where cmpParams l r = (params l) `compare` (params r)
+         params = length.snd
+-        chooseMins [] = []
+-        chooseMins [x] = [x]
+-        chooseMins (x:xs) = x : filter (\m -> params m == params x) xs
++        chooseMins (x:xs) = x : takeWhile (\m -> params m == params x) xs
++        chooseMins ps = ps 
+ 
+ mostSpecificContexts [] = []
+ mostSpecificContexts [x] = [x]
+hunk ./compiler/typecheck/TcSimplify.lhs 3700
+   | otherwise
+     = False
+ 
+-mapTyVarsToTypesInsts tvMap = map (mapTyVarsToTypesInst tvMap)
+-mapTyVarsToTypesInst tvMap inst@(Dict {tci_pred=pred}) = inst { tci_pred = mapTyVarsToTypesPred tvMap pred }
+-
+-mapTyVarsToTypesPreds tvMap = map (mapTyVarsToTypesPred tvMap) 
+-mapTyVarsToTypesPred tvMap (ClassP cls tys) = ClassP cls $ mapTyVarsToTypesTypes tvMap tys
+-
+-mapTyVarsToTypesTypes :: [(TyVar,Type)] -> [Type] -> [Type]
+-mapTyVarsToTypesTypes tvMap tys = map (mapTyVarsToTypesType tvMap) tys
+-
+-mapTyVarsToTypesType :: [(TyVar,Type)] -> Type -> Type
+-mapTyVarsToTypesType tvMap (TyVarTy tv) = mapTyVarType tvMap tv
+-mapTyVarsToTypesType tvMap (AppTy ty1 ty2) = AppTy (mapTyVarsToTypesType tvMap ty1) (mapTyVarsToTypesType tvMap ty2)
+-mapTyVarsToTypesType tvMap (TyConApp tc tys) = TyConApp tc $ mapTyVarsToTypesTypes tvMap tys
+-mapTyVarsToTypesType tvMap (FunTy ty1 ty2) = FunTy (mapTyVarsToTypesType tvMap ty1) (mapTyVarsToTypesType tvMap ty2)
+---mapTyVarsToTypesType tvMap (ForAllTy tv ty) = ForAllTy (mapTyVar tvMap tv) (mapTyVarsToTypesType tvMap ty)
+-mapTyVarsToTypesType tvMap (PredTy pred) = PredTy $ mapTyVarsToTypesPred tvMap pred
+-
+-mapTyVarType :: [(TyVar, Type)] -> TyVar -> Type
+-mapTyVarType tvMap tv = fromMaybe (TyVarTy tv) $ tvLookupByName tv tvMap 
+-
+-updateTvMap :: [(TyVar, a)] -> [(TyVar, a)] -> [(TyVar, a)]
+-updateTvMap tvMap updates
+-  = foldr update tvMap updates
+-  where update up@(v1,val) (e@(v2,_):elems) 
+-               | v1 `eqVarNamesVar` v2 = (v1,val):elems
+-               | otherwise = e:(update up elems)
+-
+-
+ mapTyVarsPreds tvMap = map (mapTyVarsPred tvMap) 
+ mapTyVarsPred tvMap (ClassP cls tys) = ClassP cls $ mapTyVarsTypes tvMap tys
+ mapTyVarsPred tvMap (EqPred ty1 ty2) = EqPred (mapTyVarsType tvMap ty1) (mapTyVarsType tvMap ty2)
+hunk ./compiler/typecheck/TcSimplify.lhs 3738
+ tvLookupByName :: TyVar -> [(TyVar, a)] -> Maybe a
+ tvLookupByName tv1 tvMap = find (\(tv2,_) -> eqVarNamesVar tv1 tv2) tvMap >>= Just . snd
+ 
+-tyVarsToTypes :: [(TyVar, Type)] -> Type -> Type
+-tyVarsToTypes tvMap ty@(TyVarTy tv)
+-  = case tvLookupByName tv tvMap of
+-         Nothing  -> ty
+-         Just ty' -> ty'
+-tyVarsToTypes tvMap (AppTy ty1 ty2) = AppTy (tyVarsToTypes tvMap ty1) (tyVarsToTypes tvMap ty2)
+-tyVarsToTypes tvMap (TyConApp tc tys) = TyConApp tc $ map (tyVarsToTypes tvMap) tys
+-tyVarsToTypes tvMap (FunTy ty1 ty2) = FunTy (tyVarsToTypes tvMap ty1) (tyVarsToTypes tvMap ty2)
+-tyVarsToTypes tvMap (ForAllTy tv ty) = undefined
+-tyVarsToTypes tvMap (PredTy pred) = PredTy $ tyVarsToTypesPred tvMap pred
+-
+-tyVarsToTypesPred :: [(TyVar, Type)] -> PredType -> PredType
+-tyVarsToTypesPred tvMap (ClassP cls tys) = ClassP cls $ map (tyVarsToTypes tvMap) tys
+-
+ mapTyVar :: [(TyVar, TyVar)] -> TyVar -> TyVar
+ mapTyVar tvMap tv = fromMaybe tv $ tvLookupByName tv tvMap 
+ 
+hunk ./compiler/typecheck/TcSimplify.lhs 3785
+         ; let insts = lookupInstEnv inst_envs clas tys 
+         ; traceTc (text "MATT: STACK" <+> ppr stack)
+         ; let inst_matches = fst insts
+-        ; ASSERT( and $ map ((\x -> tcEqInstTypes x x).snd) inst_matches)
+ 
+hunk ./compiler/typecheck/TcSimplify.lhs 3786
+-        -- TODO: check for ContextConstraints flag
+-        case force of
++        ; case force of
+             True -> traceTc (text "MATT: LOOKUP (FORCE)" <+> ppr pred)
+             False -> traceTc (text "MATT: LOOKUP" <+> ppr pred)
+         ; traceTc (text "MATT: MATCHES" <+> ppr inst_matches)
+hunk ./compiler/typecheck/TcSimplify.lhs 3790
+-        ; constrained <- applyContextConstraints force inst avails stack inst_envs tys insts 
++        ; constrained <- applyContextConstraints inst stack avails tys insts 
+         ; traceTc (text "MATT: CONSTRAINED" <+> ppr constrained)
+         ; avail_insts <- checkAvail avails inst insts
+         ; traceTc (text "MATT: AVAIL INSTS" <+> (ppr avail_insts))
+hunk ./compiler/typecheck/TcSimplify.lhs 3816
+ 
+         -- TODO: to constrain unifs, merge tys with instance tys (if instance has a type for a tyvar in tys,
+         -- use it.  if tys has a type for a tyvar in instance, use that
+-        ; constrained_unifs <- applyContextConstraints force inst avails stack inst_envs tys (unif_matches, [])
++        ; constrained_unifs <- applyContextConstraints inst stack avails tys (unif_matches, [])
+         ; traceTc (text "MATT: CONSTRAINED UNIFS" <+> (ppr constrained_unifs))
+         ; let best_unifs = bestInstMatches $ fst constrained_unifs
+         ; traceTc (text "MATT: BEST UNIFS" <+> (ppr best_unifs))
+hunk ./compiler/typecheck/TcSimplify.lhs 3879
+ 				-- Record that this dfun is needed
+         -- only if at the top level.  otherwise, we just checking a dependency.
+         -- we may not need it, i.e. not all deps met, better match is found
+-			; if (null stack) then record_dfun_usage dfun_id
+-          else return ()
++--			; if (null stack) then record_dfun_usage dfun_id
++--          else return ()
++      ; record_dfun_usage dfun_id
+ 			; return (Just (dfun_id, inst_tys)) } ;
+ 
+      	    (matches, unifs)
+}
 
 Context:
 
+[Don't use unnecessary parens when printing types (Fix Trac 4107)
+simonpj@microsoft.com**20100604110143
+ Ignore-this: a833714ab13013c4345b222f4e87db1d
+ 
+    f :: Eq a => a -> a
+ rather than
+    f :: (Eq a) => a -> a
+] 
+[Track DPH library changes
+Roman Leshchinskiy <rl@cse.unsw.edu.au>**20100604005728
+ Ignore-this: 32bc2fbea6ad975e89545d4c42fd7c30
+] 
+[fix --source-entity option passed to Haddock: we needed to escape a #
+Simon Marlow <marlowsd@gmail.com>**20100603125459
+ Ignore-this: d52ae6188b510c482bcebb23f0e553ae
+] 
+[__stg_EAGER_BLACKHOLE_INFO -> __stg_EAGER_BLACKHOLE_info (#4106)
+Simon Marlow <marlowsd@gmail.com>**20100602091419
+ Ignore-this: 293315ac8f86fd366b8d61992ecc7961
+] 
+[Add xhtml package (a new dependency of Haddock; not installed/shipped)
+Simon Marlow <marlowsd@gmail.com>**20100602090101
+ Ignore-this: af0ac8b91abe98f7fdb624ea0a4dee20
+] 
+[Use UserInterrupt rather than our own Interrupted exception (#4100)
+Simon Marlow <marlowsd@gmail.com>**20100602082345
+ Ignore-this: 1909acf2f452593138b9f85024711714
+] 
+[Add the global package DB to ghc --info (#4103)
+Simon Marlow <marlowsd@gmail.com>**20100602082233
+ Ignore-this: fd5c0e207e70eb0f62606c45dc5b8124
+] 
+[rts/sm/GC.c: resize_generations(): Remove unneeded check of number of generations.
+Marco Túlio Gontijo e Silva <marcot@debian.org>**20100528115612
+ Ignore-this: 6f1bea62917c01c7adac636146132c97
+ 
+ This "if" is inside another "if" which checks for RtsFlags.GcFlags.generations
+ > 1, so testing this again is redundant, assuming the number of generations
+ won't change during program execution.
+] 
+[rts/sm/BlockAlloc.c: Small comment correction.
+Marco Túlio Gontijo e Silva <marcot@debian.org>**20100526205839
+ Ignore-this: bd2fcd4597cc872d80b0e2eeb1c3998a
+] 
+[rts/sm/GC.c: Annotate constants.
+Marco Túlio Gontijo e Silva <marcot@debian.org>**20100526205707
+ Ignore-this: f232edb89383564d759ed890a18f602f
+] 
+[includes/rts/storage/GC.h: generation_: n_words: Improve comment.
+Marco Túlio Gontijo e Silva <marcot@debian.org>**20100526204615
+ Ignore-this: f5d5feefa8f7b552303978f1804fea23
+] 
+[Add PPC_RELOC_LOCAL_SECTDIFF support; patch from PHO in #3654
+Ian Lynagh <igloo@earth.li>**20100601204211
+ Ignore-this: 51293b7041cdce3ce7619ef11cf7ceb
+] 
+[powerpc-apple-darwin now supports shared libs
+Ian Lynagh <igloo@earth.li>**20100601173325] 
+[PIC support for PowerPC
+pho@cielonegro.org**20100508143900
+ Ignore-this: 3673859a305398c4acae3f4d7c997615
+ 
+ PPC.CodeGen.getRegister was not properly handling PicBaseReg.
+ It seems working with this patch, but I'm not sure this change is correct.
+] 
+[Vectoriser: only treat a function as scalar if it actually computes something
+Roman Leshchinskiy <rl@cse.unsw.edu.au>**20100601045630
+ Ignore-this: e5d99a6ddb62052e3520094a5af47552
+] 
+[Add a release notes file for 6.14.1
+Ian Lynagh <igloo@earth.li>**20100530171117
+ Ignore-this: 1941e6d3d1f4051b69ca2f17a1cf84d6
+] 
+[Check dblatex actually creates the files we tell it to
+Ian Lynagh <igloo@earth.li>**20100530171043
+ Ignore-this: ccc72caea2313be05cbac59bb54c0603
+ If it fails, it still exits successfully.
+] 
+[Add darwin to the list of OSes for which we use mmap
+Ian Lynagh <igloo@earth.li>**20100529145016
+ Ignore-this: a86d12a3334aaaafc86f7af9dbb0a7ae
+ Patch from Barney Stratford
+] 
+[Simplify the CPP logic in rts/Linker.c
+Ian Lynagh <igloo@earth.li>**20100529144929
+ Ignore-this: 1288f5b752cc1ab8b1c90cfd0ecfdf68
+] 
+[Fix validate on OS X
+Ian Lynagh <igloo@earth.li>**20100529154726] 
+[OS X x86_64 fix from Barney Stratford
+Ian Lynagh <igloo@earth.li>**20100529122440] 
+[OS X 64 installer fixes from Barney Stratford
+Ian Lynagh <igloo@earth.li>**20100528234935] 
+[fix warning
+Simon Marlow <marlowsd@gmail.com>**20100525155812
+ Ignore-this: f34eee3fe3d89579fd8d381c91ced750
+] 
+[Fix doc bugs (#4071)
+Simon Marlow <marlowsd@gmail.com>**20100525155728
+ Ignore-this: aa25be196de567de360075022a1942f7
+] 
+[Make sparks into weak pointers (#2185)
+Simon Marlow <marlowsd@gmail.com>**20100525150435
+ Ignore-this: feea0bb5006007b82c932bc3006124d7
+ The new strategies library (parallel-2.0+, preferably 2.2+) is now
+ required for parallel programming, otherwise parallelism will be lost.
+] 
+[If you say 'make' or 'make stage=2' here, pretend we're in the ghc dir
+Simon Marlow <marlowsd@gmail.com>**20100525085301
+ Ignore-this: 78b740337aa460915c812cbbcdae5321
+] 
+[Another attempt to get these #defines right
+Simon Marlow <marlowsd@gmail.com>**20100525154313
+ Ignore-this: 460ca0c47d81cd25eae6542114f67899
+ Apparently on Solaris it is an error to omit _ISOC99_SOURCE when using
+ _POSIX_C_SOURCE==200112L.
+] 
+[Add configure flags for the location of GMP includes/library; fixes #4022
+Ian Lynagh <igloo@earth.li>**20100525221616
+ Ignore-this: fc3060caf995d07274ec975eeefbdf3e
+] 
+[Refactor pretty printing of TyThings to fix Trac #4015
+simonpj@microsoft.com**20100525153126
+ Ignore-this: 8f15053b7554f62caa84201d2e4976d2
+] 
+[When haddocking, we need the dependencies to have been built
+Ian Lynagh <igloo@earth.li>**20100525145830
+ as haddock loads the .hi files with the GHC API.
+] 
+[Fix profiling output; spotted by jlouis
+Ian Lynagh <igloo@earth.li>**20100525111217
+ We were outputing the number of words allocated in a column titled "bytes".
+] 
+[Improve printing of TyThings; fixes Trac #4087
+simonpj@microsoft.com**20100525114045
+ Ignore-this: da2a757a533454bba80b9b77cc5a771
+] 
+[Spelling in comments
+simonpj@microsoft.com**20100525114001
+ Ignore-this: 270f3da655e526cf04e27db7a01e29c0
+] 
+[Refactor (again) the handling of default methods
+simonpj@microsoft.com**20100525113910
+ Ignore-this: 6686f6cdb878d57abf6b49fec64fcbb1
+ 
+ This patch fixes Trac #4056, by 
+ 
+  a) tidying up the treatment of default method names
+  b) removing the 'module' argument to newTopSrcBinder
+ 
+ The details aren't that interesting, but the result
+ is much tidier. The original bug was a 'nameModule' panic,
+ caused by trying to find the module of a top-level name.
+ But TH quotes generate Internal top-level names that don't
+ have a module, and that is generally a good thing.  
+ 
+ Fixing that in turn led to the default-method refactoring,
+ which also makes the Name for a default method be handled
+ in the same way as other derived names, generated in BuildTyCl
+ via a call newImplicitBinder.  Hurrah.
+] 
+[Don't do SpecConstr on NOINLINE things (Trac #4064)
+simonpj@microsoft.com**20100525112807
+ Ignore-this: 452be0a2cef0042fb67275c2827b5f72
+ 
+ Since the RULE from specialising gets the same Activation as
+ the inlining for the Id itself there's no point in specialising
+ a NOINLINE thing, because the rule will be permanently switched
+ off.
+ 
+ See Note [Transfer activation] in SpecConstr
+ and Note [Auto-specialisation and RULES] in Specialise.
+] 
+[Change our #defines to work on FreeBSD too
+Simon Marlow <marlowsd@gmail.com>**20100524105828
+ Ignore-this: b23ede46211e67859206c0ec57d6a86f
+ With glibc, things like _POSIX_C_SOURCE and _ISOC99_SOURCE are
+ additive, but on FreeBSD they are mutually exclusive.  However, it
+ turns out we only need to define _POSIX_C_SOURCE and _XOPEN_SOURCE to
+ get all the C99 stuff we need too, so there's no need for any #ifdefs.
+ 
+ Submitted by: Gabor PALI <pgj@FreeBSD.org>
+] 
+[Add a missing UNTAG_CLOSURE, causing bus errors on Sparc
+Simon Marlow <marlowsd@gmail.com>**20100524105547
+ Ignore-this: a590b5391d6f05d50c8c088456c3c166
+ We just about got away with this on x86 which isn't
+ alignment-sensitive.  The result of the memory load is compared
+ against a few different values, but there is a fallback case that
+ happened to be the right thing when the pointer was tagged.  A good
+ bug to find, nonetheless.
+] 
+[Add wiki links
+Simon Marlow <marlowsd@gmail.com>**20100520095953
+ Ignore-this: c22f126cde166e6207922b2eb51d29e3
+] 
+[the 'stage=0' trick to disable all compiler builds stopped working; fix it
+Simon Marlow <marlowsd@gmail.com>**20100520104455
+ Ignore-this: bb6fae9056471612c8dbf06916188c33
+] 
+[Comments and formatting only
+benl@ouroborus.net**20100524014021
+ Ignore-this: 64579c38154728b632e358bec751cc0b
+] 
+[Core prettyprinter fixes. Patch from Tim Chevalier. Fixes #4085
+Ian Lynagh <igloo@earth.li>**20100522225048] 
+[Correct install-name for dynamic Darwin rts
+pho@cielonegro.org**20100508151155
+ Ignore-this: 6d31716c8c113dcb46e9cb925c4201df
+] 
+[Fix the RTS debug_p build
+Ian Lynagh <igloo@earth.li>**20100522163127] 
+[Unset $CFLAGS for "GNU non-executable stack" configure test; fixes #3889
+Ian Lynagh <igloo@earth.li>**20100521165005
+ With gcc 4.4 we get
+     Error: can't resolve `.note.GNU-stack' {.note.GNU-stack section} - `.Ltext0' {.text section}
+ when running gcc with the -g flag. To work around this we unset
+ CFLAGS when running the test.
+] 
+[Don't run "set -o igncr" before configuring libffi
+Ian Lynagh <igloo@earth.li>**20100520162918
+ Ignore-this: 489fa94df23f2adf4ff63c8ede2c0794
+ It used to make the build work on cygwin, but now it breaks it instead:
+     config.status: creating include/Makefile
+     gawk: ./confLqjohp/subs.awk:1: BEGIN {\r
+     gawk: ./confLqjohp/subs.awk:1: ^ backslash not last character on line
+     config.status: error: could not create include/Makefile
+     make[2]: *** [libffi/stamp.ffi.configure-shared] Error 1
+     make[1]: *** [all] Error 2
+] 
+[Stop passing -Wl,-macosx_version_min to gcc
+Ian Lynagh <igloo@earth.li>**20100520154003
+ Fixes a build failure on OS X 10.6. When linking
+     rts/dist/build/libHSrts-ghc6.13.20100519.dylib
+ we got
+     ld: symbol dyld_stub_binding_helper not defined (usually in crt1.o/dylib1.o/bundle1.o)
+     collect2: ld returned 1 exit status
+] 
+[Fix build on FreeBSD; patch from Gabor PALI
+Ian Lynagh <igloo@earth.li>**20100519140552] 
+[Fix package shadowing order (#4072)
+Simon Marlow <marlowsd@gmail.com>**20100519104617
+ Ignore-this: 26ea5e4bb5dff18618b807a54c7d6ebb
+ 
+ Later packages are supposed to shadow earlier ones in the stack,
+ unless the ordering is overriden with -package-id flags.
+ Unfortunately an earlier fix for something else had sorted the list of
+ packages so that it was in lexicographic order by installedPackageId,
+ and sadly our test (cabal/shadow) didn't pick this up because the
+ lexicographic ordering happened to work for the test.  I've now fixed
+ the test so it tries both orderings.
+] 
+[Set more env variables when configuring libffi
+Ian Lynagh <igloo@earth.li>**20100518185014
+ We now tell it where to find ld, nm and ar
+] 
+[Set the location of ar to be the in-tree ar on Windows
+Ian Lynagh <igloo@earth.li>**20100518181556] 
+[Change another / to </> to avoid building paths containing \/
+Ian Lynagh <igloo@earth.li>**20100518172015
+ This will hopefully fix #2889.
+] 
+[Fix #4074 (I hope).
+Simon Marlow <marlowsd@gmail.com>**20100518113214
+ Ignore-this: 73cd70f5bc6f5add5247b61985c03fc1
+ 
+ 1. allow multiple threads to call startTimer()/stopTimer() pairs
+ 2. disable the timer around fork() in forkProcess()
+ 
+ A corresponding change to the process package is required.
+] 
+[we don't have a gcc-lib in LIB_DIR any more
+Simon Marlow <marlowsd@gmail.com>**20100401102351
+ Ignore-this: f41acd2d8f8e6763aa8bd57a0b44a7e4
+] 
+[In validate, use gmake if available; based on a patch from Gabor PALI
+Ian Lynagh <igloo@earth.li>**20100517200654] 
+[Remove duplicate "./configure --help" output; fixes #4075
+Ian Lynagh <igloo@earth.li>**20100516141206] 
+[Update various 'sh boot's to 'perl boot'
+Ian Lynagh <igloo@earth.li>**20100516122609
+ Spotted by Marco Túlio Gontijo e Silva
+] 
+[add missing initialisation for eventBufMutex
+Simon Marlow <marlowsd@gmail.com>**20100514094943
+ Ignore-this: 7f75594a8cb54fbec5aebd46bb959f45
+] 
+[Undo part of #4003 patch
+Simon Marlow <marlowsd@gmail.com>**20100513142017
+ Ignore-this: cb65db86a38a7e5ccee9f779e489d104
+ We still need the workaround for when compiling HEAD with 6.12.2
+ 
+] 
+[Fix makefile loop (#4050)
+pho@cielonegro.org**20100507140707
+ Ignore-this: 3a1cb13d0600977e74d17ac26cbef83d
+ 
+ The libtool creates "libffi.dylib" and "libffi.5.dylib" but not "libffi.5.0.9.dylib". Having it in libffi_DYNAMIC_LIBS causes an infinite makefile loop. 
+] 
+[fix !TABLES_NEXT_TO_CODE
+Simon Marlow <marlowsd@gmail.com>**20100510151934
+ Ignore-this: fccb859b114bef1c3122c98e60af51
+] 
+[looksLikeModuleName: allow apostrophe in module names (#4051)
+Simon Marlow <marlowsd@gmail.com>**20100510094741
+ Ignore-this: df9348f3ba90608bec57257b47672985
+] 
+[add the proper library dependencies for GhcProfiled=YES
+Simon Marlow <marlowsd@gmail.com>**20100506122118
+ Ignore-this: 6236993aa308ab5b5e1e5ea5f65982a
+] 
+[Fix Trac #4003: fix the knot-tying in checkHiBootIface
+simonpj@microsoft.com**20100511075026
+ Ignore-this: a9ce2a318386fdc8782848df84592002
+ 
+ I had incorrectly "optimised" checkHiBootIface so that it forgot
+ to update the "knot-tied" type environment. 
+ 
+ This patch fixes the HEAD
+] 
+[Re-engineer the derived Ord instance generation code (fix Trac #4019)
+simonpj@microsoft.com**20100510133333
+ Ignore-this: 8fe46e4dad27fbee211a7928acf372c2
+   
+ As well as fixing #4019, I rejigged the way that Ord instances are
+ generated, which should make them faster in general.  See the 
+ Note [Generating Ord instances].
+ 
+ I tried to measure the performance difference from this change, but
+ the #4019 fix only removes one conditional branch per iteration, and
+ I couldn't measure a consistent improvement.  But still, tihs is
+ better than before.
+] 
+[Make arity of INLINE things consistent
+simonpj@microsoft.com**20100510133005
+ Ignore-this: 15e7abf803d1dcb3f4ca760d2d939d0d
+ 
+ We eta-expand things with INLINE pragmas; 
+ see Note [Eta-expanding INLINE things].
+ 
+ But I eta-expanded it the wrong amount when the function
+ was overloaded.  Ooops.
+] 
+[Compacting GC fix, we forgot to thread the new bq field of StgTSO.
+Simon Marlow <marlowsd@gmail.com>**20100510082325
+ Ignore-this: a079c8446e2ad53efff6fd95d0f3ac80
+] 
+[Add version constraints for the boot packages; fixes trac #3852
+Ian Lynagh <igloo@earth.li>**20100509175051
+ When using the bootstrapping compiler, we now explicitly constrain
+ the version of boot packages (Cabal, extensible-exceptions, etc) to the
+ in-tree version, so that the build system is less fragile should the
+ user have a newer version installed for the bootstrapping compiler.
+] 
+[Don't include inter-package dependencies when compiling with stage 0; #4031
+Ian Lynagh <igloo@earth.li>**20100509130511
+ This fixes a problem when building with GHC 6.12 on Windows, where
+ dependencies on stage 0 (bootstrapping compiler) packages have absolute
+ paths c:/ghc/..., and make gets confused by the colon.
+] 
+[Add a ghc.mk for bindisttest/
+Ian Lynagh <igloo@earth.li>**20100508223911] 
+[Move some make variables around so they are available when cleaning
+Ian Lynagh <igloo@earth.li>**20100508212405] 
+[Optimise checkremove a bit
+Ian Lynagh <igloo@earth.li>**20100508202006] 
+[Improve the bindisttest Makefile
+Ian Lynagh <igloo@earth.li>**20100508195450] 
+[Add tools to test that cleaning works properly
+Ian Lynagh <igloo@earth.li>**20100508194105] 
+[Tweak the ghc-pkg finding code
+Ian Lynagh <igloo@earth.li>**20100508125815
+ It now understand the ghc-stage[123] names we use in-tree, and it won't
+ go looking for any old ghc-pkg if it can't find the one that matches
+ ghc.
+] 
+[Add a way to show what cleaning would be done, without actually doing it
+Ian Lynagh <igloo@earth.li>**20100508122438] 
+[Tidy up the "rm" flags in the build system
+Ian Lynagh <igloo@earth.li>**20100508115745] 
+[Fix crash in nested callbacks (#4038)
+Simon Marlow <marlowsd@gmail.com>**20100507093222
+ Ignore-this: cade85e361534ce711865a4820276388
+ Broken by "Split part of the Task struct into a separate struct
+ InCall".
+] 
+[Add $(GhcDynamic) knob, set to YES to get stage2 linked with -dynamic
+Simon Marlow <marlowsd@gmail.com>**20100428205241
+ Ignore-this: 1db8bccf92099785ecac39aebd27c92d
+ Default currently NO.
+ 
+ Validate passed with GhcDynamic=YES on x86/Linux here.
+ 
+ The compiler is currently slower on x86 when linked -dynamic,
+ because the GC inner loop has been adversely affected by -fPIC, I'm
+ looking into how to fix it.
+] 
+[omit "dyn" from the way appended to the __stginit label
+Simon Marlow <marlowsd@gmail.com>**20100428204914
+ Ignore-this: 14183f3defa9f2bde68fda6729b740bc
+ When GHCi is linked dynamically, we still want to be able to load
+ non-dynamic object files.
+] 
+[improvements to findPtr(), a neat hack for browsing the heap in gdb
+Simon Marlow <marlowsd@gmail.com>**20100506115427
+ Ignore-this: ac57785bb3e13b97a5945f753f068738
+] 
+[Fix +RTS -G1
+Simon Marlow <marlowsd@gmail.com>**20100506110739
+ Ignore-this: 86a5de39a94d3331a4ee1213f82be497
+] 
+[Enable the "redundant specialise pragmas" warning; fixes trac #3855
+Ian Lynagh <igloo@earth.li>**20100506175351] 
+[Find the correct external ids when there's a wrapper
+simonpj@microsoft.com**20100506164135
+ Ignore-this: 636266407b174b05b2b8646cc73062c0
+ 
+ We were failing to externalise the wrapper id for a function
+ that had one.
+] 
+[Add a comment about pattern coercions
+simonpj@microsoft.com**20100506164027
+ Ignore-this: 17428089f3df439f65d892e23e8ed61a
+] 
+[Comments only
+simonpj@microsoft.com**20100506163829
+ Ignore-this: 169167b6463873ab173cc5750c5be469
+] 
+[Make a missing name in mkUsageInfo into a panic
+simonpj@microsoft.com**20100506163813
+ Ignore-this: b82ff1b8bf89f74f146db7cb5cc4c4d7
+ 
+ We really want to know about this!
+] 
+[Refactoring of hsXxxBinders
+simonpj@microsoft.com**20100506163737
+ Ignore-this: 97c6667625262b160f9746f7bea1c980
+ 
+ This patch moves various functions that extract the binders
+ from a HsTyClDecl, HsForeignDecl etc into HsUtils, and gives
+ them consistent names.
+] 
+[Fix Trac #3966: warn about useless UNPACK pragmas
+simonpj@microsoft.com**20100506163337
+ Ignore-this: 5beb24b686eda6113b614dfac8490df1
+ 
+ Warning about useless UNPACK pragmas wasn't as easy as I thought.
+ I did quite a bit of refactoring, which improved the code by refining
+ the types somewhat.  In particular notice that in DataCon, we have
+ 
+     dcStrictMarks   :: [HsBang]
+     dcRepStrictness :: [StrictnessMarks]
+ 
+ The former relates to the *source-code* annotation, the latter to
+ GHC's representation choice.
+] 
+[Make tcg_dus behave more sanely; fixes a mkUsageInfo panic
+simonpj@microsoft.com**20100506162719
+ Ignore-this: d000bca15b0e127e297378ded1bfb81b
+ 
+ The tcg_dus field used to contain *uses* of type and class decls,
+ but not *defs*.  That was inconsistent, and it really went wrong
+ for Template Haskell bracket.  What happened was that
+  foo = [d| data A = A
+        	   f :: A -> A
+        	   f x = x |]
+ would find a "use" of A when processing the top level of the module,
+ which in turn led to a mkUsageInfo panic in MkIface.  The cause was
+ the fact that the tcg_dus for the nested quote didn't have defs for
+ A.
+] 
+[Add a HsExplicitFlag to SpliceDecl, to improve Trac #4042
+simonpj@microsoft.com**20100506161523
+ Ignore-this: e4e563bac2fd831cc9e94612f5b4fa9d
+ 
+ The issue here is that 
+ 
+     g :: A -> A
+     f
+     data A = A
+ 
+ is treated as if you'd written $(f); that is the call of
+ f is a top-level Template Haskell splice.  This patch 
+ makes sure that we *first* check the -XTemplateHaskellFlag
+ and bleat about a parse error if it's off.  Othewise we
+ get strange seeing "A is out of scope" errors.
+] 
+[Change an assert to a warn
+simonpj@microsoft.com**20100506161111
+ Ignore-this: 739a4fb4c7940376b0f2c8ad52a1966c
+ 
+ This is in the constraint simplifier which I'm about
+ to rewrite, so I'm hoping the assert isn't fatal!
+] 
+[Tidy up debug print a little
+simonpj@microsoft.com**20100506161027
+ Ignore-this: bd5492878e06bee1cddcbb3fc4df66d8
+] 
+[Remove useless UNPACK pragmas
+simonpj@microsoft.com**20100506161012
+ Ignore-this: 3e5ab1a7cf58107034412a798bc214e5
+] 
+[Add WARNM2 macro, plus some refactoring
+simonpj@microsoft.com**20100506160808
+ Ignore-this: 2ab4f1f0b5d94be683036e77aec09255
+] 
+[Use -Wwarn for the binary package, becuase it has redundant UNPACK pragmas
+simonpj@microsoft.com**20100506160750
+ Ignore-this: cf0d3a11473e28bfce9602e716e69a5f
+] 
+[Fix Trac #3966: warn about unused UNPACK pragmas
+simonpj@microsoft.com**20100409201812
+ Ignore-this: c96412596b39c918b5fb9b3c39ce2119
+] 
+[Fix Trac #3953: fail earlier when using a bogus quasiquoter
+simonpj@microsoft.com**20100409201748
+ Ignore-this: ef48e39aa932caed538643985234f043
+] 
+[Fix Trac #3965: tighten conditions when deriving Data
+simonpj@microsoft.com**20100409184420
+ Ignore-this: 96f7d7d2da11565d26b465d7d0497ac9
+ 
+ It's tricky to set up the context for a Data instance.  I got it wrong
+ once, and fixed it -- hence the "extra_constraints" in
+ TcDeriv.inferConstraints.  
+ 
+ But it still wasn't right!  The tricky bit is that dataCast1 is only
+ generated when T :: *->*, and dataCast2 when T :: *->*->*. (See
+ the code in TcGenDeriv for dataCastX.
+] 
+[Fix Trac #3964: view patterns in DsArrows
+simonpj@microsoft.com**20100409165557
+ Ignore-this: d823c182831d5e2e592e995b16180e2f
+ 
+ Just a missing case; I've eliminated the catch-all so 
+ that we get a warning next time we extend HsPat
+] 
+[Fix Trac #3955: renamer and type variables
+simonpj@microsoft.com**20100409163710
+ Ignore-this: bd5ec64d76c0f583bf5f224792bf294c
+ 
+ The renamer wasn't computing the free variables of a type declaration
+ properly.  This patch refactors a bit, and makes it more robust,
+ fixing #3955 and several other closely-related bugs.  (We were
+ omitting some free variables and that could just possibly lead to a
+ usage-version tracking error.
+] 
+[Layout only
+simonpj@microsoft.com**20100409163506
+ Ignore-this: 1f14990b5aa0b9821b84452fb34e9f41
+] 
+[Give a better deprecated message for INCLUDE pragmas; fixes #3933
+Ian Lynagh <igloo@earth.li>**20100506130910
+ We now have a DeprecatedFullText constructor, so we can override the
+ "-#include is deprecated: " part of the warning.
+] 
+[De-haddock a comment that confuses haddock
+Ian Lynagh <igloo@earth.li>**20100506123607] 
+[Fix comment to not confuse haddock
+Ian Lynagh <igloo@earth.li>**20100506113642] 
+[Detect EOF when trying to parse a string in hp2ps
+Ian Lynagh <igloo@earth.li>**20100506000830] 
+[Make the demand analyser sdd demands for strict constructors
+simonpj@microsoft.com**20100505200936
+ Ignore-this: eb32632adbc354eb7a5cf884c263e0d3
+ 
+ This opportunity was spotted by Roman, and is documented in 
+ Note [Add demands for strict constructors] in DmdAnal.
+] 
+[Fix interaction of exprIsCheap and the lone-variable inlining check
+simonpj@microsoft.com**20100505200723
+ Ignore-this: f3cb65085c5673a99153d5d7b6559ab1
+ 
+ See Note [Interaction of exprIsCheap and lone variables] in CoreUnfold
+ 
+ This buglet meant that a nullary definition with an INLINE pragma
+ counter-intuitively didn't get inlined at all.  Roman identified
+ the bug.
+] 
+[Matching cases in SpecConstr and Rules
+simonpj@microsoft.com**20100505200543
+ Ignore-this: f5c28c780fbf8badce84c6fdc9aa1779
+ 
+ This patch has zero effect.  It includes comments,
+ a bit of refactoring, and a tiny bit of commment-out
+ code go implement the "matching cases" idea below.
+ 
+ In the end I've left it disabled because while I think
+ it does no harm I don't think it'll do any good either.
+ But I didn't want to lose the idea totally. There's
+ a thread called "Storable and constant memory" on
+ the libraries@haskell.org list (Apr 2010) about it.
+ 
+ Note [Matching cases]
+ ~~~~~~~~~~~~~~~~~~~~~
+ {- NOTE: This idea is currently disabled.  It really only works if
+          the primops involved are OkForSpeculation, and, since
+ 	 they have side effects readIntOfAddr and touch are not.
+ 	 Maybe we'll get back to this later .  -}
+   
+ Consider
+    f (case readIntOffAddr# p# i# realWorld# of { (# s#, n# #) ->
+       case touch# fp s# of { _ -> 
+       I# n# } } )
+ This happened in a tight loop generated by stream fusion that 
+ Roman encountered.  We'd like to treat this just like the let 
+ case, because the primops concerned are ok-for-speculation.
+ That is, we'd like to behave as if it had been
+    case readIntOffAddr# p# i# realWorld# of { (# s#, n# #) ->
+    case touch# fp s# of { _ -> 
+    f (I# n# } } )
+] 
+[Comments only
+simonpj@microsoft.com**20100504163629
+ Ignore-this: 3be12df04714aa820bce706b5dc8a9cb
+] 
+[Comments only
+simonpj@microsoft.com**20100504163529
+ Ignore-this: 791e2fd39c7d880ce1dc80ebdf3a5398
+] 
+[Comments only
+simonpj@microsoft.com**20100504163457
+ Ignore-this: f19e9ffeb3d65770b1595bca5f97a59d
+] 
+[Comments only (about type families)
+simonpj@microsoft.com**20100417145032
+ Ignore-this: dd39425ef2155d52dbf55a4d5fd97cb8
+] 
+[Fix hp2ps when the .hp file has large string literals
+Ian Lynagh <igloo@earth.li>**20100505191921] 
+[In build system, call package-config after including package data
+Ian Lynagh <igloo@earth.li>**20100504225035
+ Otherwise the $1_$2_HC_OPTS variable gets clobbered.
+] 
+[runghc: flush stdout/stderr on an exception (#3890)
+Simon Marlow <marlowsd@gmail.com>**20100505133848
+ Ignore-this: 224c1898cec64cb1c94e0d7033e7590e
+] 
+[Remove the Unicode alternative for ".." (#3894)
+Simon Marlow <marlowsd@gmail.com>**20100505121202
+ Ignore-this: 2452cd67281667106f9169747b6d784f
+] 
+[tidyup; no functional changes
+Simon Marlow <marlowsd@gmail.com>**20100505115015
+ Ignore-this: d0787e5cdeef1dee628682fa0a46019
+] 
+[Make the running_finalizers flag task-local
+Simon Marlow <marlowsd@gmail.com>**20100505114947
+ Ignore-this: 345925d00f1dca203941b3c5d84c90e1
+ Fixes a bug reported by Lennart Augustsson, whereby we could get an
+ incorrect error from the RTS about re-entry from a finalizer,
+] 
+[add a MAYBE_GC() in killThread#, fixes throwto003(threaded2) looping
+Simon Marlow <marlowsd@gmail.com>**20100505114746
+ Ignore-this: efea04991d6feed04683a42232fc85da
+] 
+[Allow filepath-1.2.*
+Simon Marlow <marlowsd@gmail.com>**20100505101139
+ Ignore-this: 1b5580cd9cd041ec48f40cd37603326a
+] 
+[BlockedOnMsgThrowTo is possible in resurrectThreads (#4030)
+Simon Marlow <marlowsd@gmail.com>**20100505094534
+ Ignore-this: ac24a22f95ffeaf480187a1620fdddb2
+] 
+[Don't raise a throwTo when the target is masking and BlockedOnBlackHole
+Simon Marlow <marlowsd@gmail.com>**20100505094506
+ Ignore-this: 302616931f61667030d77ddfbb02374e
+] 
+[Fix build with GHC 6.10
+Ian Lynagh <igloo@earth.li>**20100504180302
+ In GHC 6.10, intersectionWith is (a -> b -> a) instead of (a -> b -> c),
+ so we need to jump through some hoops to get the more general type.
+] 
+[The libffi patches are no longer needed
+Ian Lynagh <igloo@earth.li>**20100504171603] 
+[Use the in-tree windres; fixes trac #4032
+Ian Lynagh <igloo@earth.li>**20100504170941] 
+[Print unfoldings on lambda-bound variables
+Simon PJ <simonpj@microsoft.com>**20100503181822
+ Ignore-this: 2fd5a7502cc6273d96258e0914f0f8cd
+ 
+ ...in the unusual case where they have one; 
+ see Note [Case binders and join points] in Simplify.lhs
+] 
+[Replace FiniteMap and UniqFM with counterparts from containers.
+Milan Straka <fox@ucw.cz>**20100503171315
+ Ignore-this: a021972239163dbf728284b19928cebb
+ 
+ The original interfaces are kept. There is small performance improvement:
+ - when compiling for five nofib, we get following speedups:
+     Average                -----           -2.5%
+     Average                -----           -0.6%
+     Average                -----           -0.5%
+     Average                -----           -5.5%
+     Average                -----          -10.3%
+ - when compiling HPC ten times, we get:
+     switches                          oldmaps   newmaps
+     -O -fasm                          117.402s  116.081s (98.87%)
+     -O -fasm -fregs-graph             119.993s  118.735s (98.95%)
+     -O -fasm -fregs-iterative         120.191s  118.607s (98.68%)
+] 
+[Make the demand analyser take account of lambda-bound unfoldings
+Simon PJ <simonpj@microsoft.com>**20100503151630
+ Ignore-this: 2ee8e27d4df2debfc79e6b8a17c32bc1
+ 
+ This is a long-standing lurking bug. See Note [Lamba-bound unfoldings]
+ in DmdAnal.
+ 
+ I'm still not really happy with this lambda-bound-unfolding stuff.
+] 
+[Fix dynamic libs on OS X, and enable them by default
+Ian Lynagh <igloo@earth.li>**20100503150302] 
+[Switch back to using bytestring from the darcs repo; partially fixes #3855
+Ian Lynagh <igloo@earth.li>**20100502113458] 
+[Fix some cpp warnings when building on FreeBSD; patch from Gabor PALI
+Ian Lynagh <igloo@earth.li>**20100428150700] 
+[Fix "make 2"
+Ian Lynagh <igloo@earth.li>**20100427162212
+ The new Makefile logic was enabling the stage 1 rules when stage=2,
+ so "make 2" was rebuilding stage 1.
+] 
+[Inplace programs depend on their shell wrappers
+Ian Lynagh <igloo@earth.li>**20100427160038] 
+[--make is now the default (#3515), and -fno-code works with --make (#3783)
+Simon Marlow <marlowsd@gmail.com>**20100427122851
+ Ignore-this: 33330474fa4703f32bf9997462b4bf3c
+ If the command line contains any Haskell source files, then we behave
+ as if --make had been given.
+ 
+ The meaning of the -c flag has changed (back): -c now selects one-shot
+ compilation, but stops before linking.  However, to retain backwards
+ compatibility, -c is still allowed with --make, and means the same as
+ --make -no-link.  The -no-link flag has been un-deprecated.
+ 
+ -fno-code is now allowed with --make (#3783); the fact that it was
+ disabled before was largely accidental, it seems.  We also had some
+ regressions in this area: it seems that -fno-code was causing a .hc
+ file to be emitted in certain cases.  I've tidied up the code, there
+ was no need for -fno-code to be a "mode" flag, as far as I can tell.
+ 
+ -fno-code does not emit interface files, nor does it do recompilation
+ checking, as suggested in #3783.  This would make Haddock emit
+ interface files, for example, and I'm fairly sure we don't want to do
+ that.  Compiling with -fno-code is pretty quick anyway, perhaps we can
+ get away without recompilation checking.
+] 
+[remove duplicate docs for -e in --help output (#4010)
+Simon Marlow <marlowsd@gmail.com>**20100426140642
+ Ignore-this: 187ff893ba8ffa0ec127867a7590e38d
+] 
+[workaround for #4003, fixes HEAD build with 6.12.2
+Simon Marlow <marlowsd@gmail.com>**20100426103428
+ Ignore-this: c4bc445dc8052d4e6efef3f1daf63562
+] 
+[Make sure all the clean rules are always included
+Ian Lynagh <igloo@earth.li>**20100424181823
+ In particular, this fixes a problem where stage3 bits weren't being cleaned
+] 
+[Correct the name of the amd64/FreeBSD platform in PlatformSupportsSharedLibs
+Ian Lynagh <igloo@earth.li>**20100424132830
+ We weren't getting sharedlibs on amd64/FreeBSD because of this
+] 
+[Include DPH docs in bindists
+Ian Lynagh <igloo@earth.li>**20100424123101] 
+[reinstate eta-expansion during SimplGently, to fix inlining of sequence_
+Simon Marlow <marlowsd@gmail.com>**20100423124853
+ Ignore-this: 4fa0fd5bafe0d6b58fc81076f50d5f8d
+] 
+[fix 64-bit value for W_SHIFT, which thankfully appears to be not used
+Simon Marlow <marlowsd@gmail.com>**20100422213605
+ Ignore-this: 525c062d2456c224ec8d0e083edd3b55
+] 
+[Add missing constant folding and optimisation for unsigned division
+Simon Marlow <marlowsd@gmail.com>**20100422213443
+ Ignore-this: fb10d1cda0852fab0cbcb47247498fb3
+ Noticed by Denys Rtveliashvili <rtvd@mac.com>, see #4004
+] 
+[Fix the GHC API link in the main doc index.html
+Ian Lynagh <igloo@earth.li>**20100422213226] 
+[Give the right exit code in darcs-all
+Ian Lynagh <igloo@earth.li>**20100421171339
+ Our END block was calling system, which alters $?. So now we save and
+ restore it.
+] 
+[Use StgWord64 instead of ullong
+Ian Lynagh <igloo@earth.li>**20100421162336
+ This patch also fixes ullong_format_string (renamed to showStgWord64)
+ so that it works with values outside the 32bit range (trac #3979), and
+ simplifies the without-commas case.
+] 
+[Implement try10Times in Makefile
+Ian Lynagh <igloo@earth.li>**20100420165909
+ Avoid using seq, as FreeBSD has jot instead.
+] 
+[Fix crash in non-threaded RTS on Windows
+Simon Marlow <marlowsd@gmail.com>**20100420122125
+ Ignore-this: 28b0255a914a8955dce02d89a7dfaca
+ The tso->block_info field is now overwritten by pushOnRunQueue(), but
+ stg_block_async_info was assuming that it still held a pointer to the
+ StgAsyncIOResult.  We must therefore save this value somewhere safe
+ before putting the TSO on the run queue.
+] 
+[Expand the scope of the event_buf_mutex to cover io_manager_event
+Simon Marlow <marlowsd@gmail.com>**20100420122026
+ Ignore-this: 185a6d84f7d4a35997f10803f6dacef1
+ I once saw a failure that I think was due to a race on
+ io_manager_event, this should fix it.
+] 
+[Flags -auto and -auto-all operate only on functions not marked INLINE.
+Milan Straka <fox@ucw.cz>**20100331191050
+ Ignore-this: 3b63580cfcb3c33d62ad697c36d94d05
+] 
+[Spelling correction for LANGUAGE pragmas
+Max Bolingbroke <batterseapower@hotmail.com>**20100413192825
+ Ignore-this: 311b51ba8d43f6c7fd32f48db9a88dee
+] 
+[Update the user guide so it talks about the newer "do rec" notation everywhere
+Ian Lynagh <igloo@earth.li>**20100416205416
+ Some of the problems highlighted in trac #3968.
+] 
+[Fix typo
+Ian Lynagh <igloo@earth.li>**20100416205412] 
+[Fix Trac #3950: unifying types of different kinds
+simonpj@microsoft.com**20100412151845
+ Ignore-this: d145b9de5ced136ef2c39f3ea4a04f4a
+ 
+ I was assuming that the unifer only unified types of the 
+ same kind, but now we can "defer" unsolved constraints that
+ invariant no longer holds.  Or at least is's more complicated
+ to ensure.  
+ 
+ This patch takes the path of not assuming the invariant, which
+ is simpler and more robust.  See
+ Note [Mismatched type lists and application decomposition]
+] 
+[Fix Trac #3943: incorrect unused-variable warning
+simonpj@microsoft.com**20100412151630
+ Ignore-this: 52459f2b8b02c3cb120abe674dc9a060
+ 
+ In fixing this I did the usual little bit of refactoring
+] 
+[Convert boot and boot-pkgs to perl
+Ian Lynagh <igloo@earth.li>**20100415143919
+ This stops us having to worry about sh/sed/... portability.
+] 
+[Use $(MAKE), not make, when recursively calling make
+Ian Lynagh <igloo@earth.li>**20100415121453] 
+[Remove the ghc_ge_609 makefile variables
+Ian Lynagh <igloo@earth.li>**20100412235658
+ They are now guaranteed to be YES
+] 
+[Increase the minimum version number required to 6.10 in configure.ac
+Ian Lynagh <igloo@earth.li>**20100412235313] 
+[The bootstrapping compiler is now required to be > 609
+Ian Lynagh <igloo@earth.li>**20100409161046] 
+[Handle IND_STATIC in isRetainer
+Ian Lynagh <igloo@earth.li>**20100409104207
+ IND_STATIC used to be an error, but at the moment it can happen
+ as isAlive doesn't look through IND_STATIC as it ignores static
+ closures. See trac #3956 for a program that hit this error.
+] 
+[Add Data and Typeable instances to HsSyn
+David Waern <david.waern@gmail.com>**20100330011020
+ Ignore-this: c3f2717207b15539fea267c36b686e6a
+ 
+ The instances (and deriving declarations) have been taken from the ghc-syb
+ package.
+] 
+[Fix for derefing ThreadRelocated TSOs in MVar operations
+Simon Marlow <marlowsd@gmail.com>**20100407092824
+ Ignore-this: 94dd7c68a6094eda667e2375921a8b78
+] 
+[sanity check fix
+Simon Marlow <marlowsd@gmail.com>**20100407092746
+ Ignore-this: 9c18cd5f5393e5049015ca52e62a1269
+] 
+[get the reg liveness right in the putMVar# heap check
+Simon Marlow <marlowsd@gmail.com>**20100407092724
+ Ignore-this: b1ba07a59ecfae00e9a1f8391741abc
+] 
+[initialise the headers of MSG_BLACKHOLE objects properly
+Simon Marlow <marlowsd@gmail.com>**20100407081712
+ Ignore-this: 183dcd0ca6a395d08db2be12b02bdd79
+] 
+[initialise the headers of MVAR_TSO_QUEUE objects properly
+Simon Marlow <marlowsd@gmail.com>**20100407081514
+ Ignore-this: 4b4a2f30cf2fb69ca4128c41744687bb
+] 
+[undo debugging code
+Simon Marlow <marlowsd@gmail.com>**20100406142740
+ Ignore-this: 323c2248f817b6717c19180482fc4b00
+] 
+[putMVar#: fix reg liveness in the heap check
+Simon Marlow <marlowsd@gmail.com>**20100406135832
+ Ignore-this: cddd2c7807ac7612c9b2c4c0d384d284
+] 
+[account for the new BLACKHOLEs in the GHCi debugger
+Simon Marlow <marlowsd@gmail.com>**20100406133406
+ Ignore-this: 4d4aeb4bbada3f50dc1fb0123f565e8f
+] 
+[don't forget to deRefTSO() in tryWakeupThread()
+Simon Marlow <marlowsd@gmail.com>**20100406130411
+ Ignore-this: 171d57c4f8653835dec0b69f9be9881c
+] 
+[Fix bug in popRunQueue
+Simon Marlow <marlowsd@gmail.com>**20100406091453
+ Ignore-this: 9d3cec8f18f5c5cbd51751797386eb6f
+] 
+[fix bug in migrateThread()
+Simon Marlow <marlowsd@gmail.com>**20100401105840
+ Ignore-this: 299bcf0d1ea0f8865f3e845eb93d2ad3
+] 
+[Remove the IND_OLDGEN and IND_OLDGEN_PERM closure types
+Simon Marlow <marlowsd@gmail.com>**20100401093519
+ Ignore-this: 95f2480c8a45139835eaf5610217780b
+ These are no longer used: once upon a time they used to have different
+ layout from IND and IND_PERM respectively, but that is no longer the
+ case since we changed the remembered set to be an array of addresses
+ instead of a linked list of closures.
+] 
+[Change the representation of the MVar blocked queue
+Simon Marlow <marlowsd@gmail.com>**20100401091605
+ Ignore-this: 20a35bfabacef2674df362905d7834fa
+ 
+ The list of threads blocked on an MVar is now represented as a list of
+ separately allocated objects rather than being linked through the TSOs
+ themselves.  This lets us remove a TSO from the list in O(1) time
+ rather than O(n) time, by marking the list object.  Removing this
+ linear component fixes some pathalogical performance cases where many
+ threads were blocked on an MVar and became unreachable simultaneously
+ (nofib/smp/threads007), or when sending an asynchronous exception to a
+ TSO in a long list of thread blocked on an MVar.
+ 
+ MVar performance has actually improved by a few percent as a result of
+ this change, slightly to my surprise.
+ 
+ This is the final cleanup in the sequence, which let me remove the old
+ way of waking up threads (unblockOne(), MSG_WAKEUP) in favour of the
+ new way (tryWakeupThread and MSG_TRY_WAKEUP, which is idempotent).  It
+ is now the case that only the Capability that owns a TSO may modify
+ its state (well, almost), and this simplifies various things.  More of
+ the RTS is based on message-passing between Capabilities now.
+] 
+[eliminate some duplication with a bit of CPP
+Simon Marlow <marlowsd@gmail.com>**20100330154355
+ Ignore-this: 838f7d341f096ca14c86ab9c81193e36
+] 
+[Make ioManagerDie() idempotent
+Simon Marlow <marlowsd@gmail.com>**20100401100705
+ Ignore-this: a5996b43cdb2e2d72e6e971d7ea925fb
+ Avoids screeds of "event buffer overflowed; event dropped" in
+ conc059(threaded1).
+] 
+[Move a thread to the front of the run queue when another thread blocks on it
+Simon Marlow <marlowsd@gmail.com>**20100329144521
+ Ignore-this: c518ff0d41154680edc811d891826a29
+ This fixes #3838, and was made possible by the new BLACKHOLE
+ infrastructure.  To allow reording of the run queue I had to make it
+ doubly-linked, which entails some extra trickiness with regard to
+ GC write barriers and suchlike.
+] 
+[remove non-existent MUT_CONS symbols
+Simon Marlow <marlowsd@gmail.com>**20100330152600
+ Ignore-this: 885628257a9d03f2ece2a754d993014a
+] 
+[change throwTo to use tryWakeupThread rather than unblockOne
+Simon Marlow <marlowsd@gmail.com>**20100329144613
+ Ignore-this: 10ad4965e6c940db71253f1c72218bbb
+] 
+[tiny GC optimisation
+Simon Marlow <marlowsd@gmail.com>**20100329144551
+ Ignore-this: 9e095b9b73fff0aae726f9937846ba92
+] 
+[New implementation of BLACKHOLEs
+Simon Marlow <marlowsd@gmail.com>**20100329144456
+ Ignore-this: 96cd26793b4e6ab9ddd0d59aae5c2f1d
+ 
+ This replaces the global blackhole_queue with a clever scheme that
+ enables us to queue up blocked threads on the closure that they are
+ blocked on, while still avoiding atomic instructions in the common
+ case.
+ 
+ Advantages:
+ 
+  - gets rid of a locked global data structure and some tricky GC code
+    (replacing it with some per-thread data structures and different
+    tricky GC code :)
+ 
+  - wakeups are more prompt: parallel/concurrent performance should
+    benefit.  I haven't seen anything dramatic in the parallel
+    benchmarks so far, but a couple of threading benchmarks do improve
+    a bit.
+ 
+  - waking up a thread blocked on a blackhole is now O(1) (e.g. if
+    it is the target of throwTo).
+ 
+  - less sharing and better separation of Capabilities: communication
+    is done with messages, the data structures are strictly owned by a
+    Capability and cannot be modified except by sending messages.
+ 
+  - this change will utlimately enable us to do more intelligent
+    scheduling when threads block on each other.  This is what started
+    off the whole thing, but it isn't done yet (#3838).
+ 
+ I'll be documenting all this on the wiki in due course.
+ 
+] 
+[Fix warnings (allow pushOnRunQueue() to not be inlined)
+Simon Marlow <marlowsd@gmail.com>**20100401114559
+ Ignore-this: f40bfbfad70a5165a946d11371605b7d
+] 
+[remove out of date comment
+Simon Marlow <marlowsd@gmail.com>**20100401105853
+ Ignore-this: 26af88dd418ee0bcda7223b3b7e4e8d2
+] 
+[tidy up spacing in stderr traces
+Simon Marlow <marlowsd@gmail.com>**20100326163122
+ Ignore-this: 16558b0433a274be217d4bf39aa4946
+] 
+[Fix an assertion that was not safe when running in parallel
+Simon Marlow <marlowsd@gmail.com>**20100325143656
+ Ignore-this: cad08fb8900eb3a475547af0189fcc47
+] 
+[Never jump directly to a thunk's entry code, even if it is single-entry
+Simon Marlow <marlowsd@gmail.com>**20100325114847
+ Ignore-this: 938da172c06a97762ef605c8fccfedf1
+ I don't think this fixes any bugs as we don't have single-entry thunks
+ at the moment, but it could cause problems for parallel execution if
+ we ever did re-introduce update avoidance.
+] 
+[Rename forgotten -dverbose-simpl to -dverbose-core2core in the docs.
+Milan Straka <fox@ucw.cz>**20100331153626
+ Ignore-this: 2da58477fb96e1cfb80f37dddd7c422c
+] 
+[Add -pa and -V to the documentation of time profiling options.
+Milan Straka <fox@ucw.cz>**20100329191121
+ Ignore-this: be74d216481ec5a19e5f40f85e6e3d65
+] 
+[Keep gcc 4.5 happy
+Simon Marlow <marlowsd@gmail.com>**20100330120425
+ Ignore-this: 7811878cc2bd1ce9cfbb5bf102fe3454
+] 
+[Fix warning compiling Linker.c for PPC Mac
+naur@post11.tele.dk**20100403182355
+ Ignore-this: e2d2448770c9714ce17dd6cf3e297063
+ The warning message eliminated is:
+ > rts/Linker.c:4756:0:
+ >      warning: nested extern declaration of 'symbolsWithoutUnderscore'
+] 
+[Fix error compiling AsmCodeGen.lhs for PPC Mac (mkRtsCodeLabel)
+naur@post11.tele.dk**20100403181656
+ Ignore-this: deb7524ea7852a15a2ac0849c8c82f74
+ The error messages eliminated are:
+ > compiler/nativeGen/AsmCodeGen.lhs:875:31:
+ >     Not in scope: `mkRtsCodeLabel'
+ > compiler/nativeGen/AsmCodeGen.lhs:879:31:
+ >     Not in scope: `mkRtsCodeLabel'
+ > compiler/nativeGen/AsmCodeGen.lhs:883:31:
+ >     Not in scope: `mkRtsCodeLabel'
+] 
+[Fix error compiling AsmCodeGen.lhs for PPC Mac (DestBlockId)
+naur@post11.tele.dk**20100403180643
+ Ignore-this: 71e833e94ed8371b2ffabc2cf80bf585
+ The error message eliminated is:
+ > compiler/nativeGen/AsmCodeGen.lhs:637:16:
+ >     Not in scope: data constructor `DestBlockId'
+] 
+[Fix boot-pkgs's sed usage to work with Solaris's sed
+Ian Lynagh <igloo@earth.li>**20100401153441] 
+[Pass "-i org.haskell.GHC" to packagemaker when building the OS X installer
+Ian Lynagh <igloo@earth.li>**20100331144707
+ This seems to fix this failure:
+ [...]
+ ** BUILD SUCCEEDED **
+ rm -f -f GHC-system.pmdoc/*-contents.xml
+ /Developer/usr/bin/packagemaker -v --doc GHC-system.pmdoc\
+              -o /Users/ian/to_release/ghc-6.12.1.20100330/GHC-6.12.1.20100330-i386.pkg
+ 2010-03-31 15:08:15.695 packagemaker[13909:807] Setting to : 0 (null)
+ 2010-03-31 15:08:15.709 packagemaker[13909:807] Setting to : 0 org.haskell.glasgowHaskellCompiler.ghc.pkg
+ 2010-03-31 15:08:15.739 packagemaker[13909:807] relocate: (null) 0
+ 2010-03-31 15:08:15.740 packagemaker[13909:807] *** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: '*** -[NSXMLDocument initWithXMLString:options:error:]: nil argument'
+ 2010-03-31 15:08:15.741 packagemaker[13909:807] Stack: (
+     2511962091,
+     2447007291,
+     2511961547,
+     2511961610,
+     2432803204,
+     453371,
+     447720,
+     436209,
+     435510,
+     9986,
+     9918
+ )
+ make[1]: *** [framework-pkg] Trace/BPT trap
+ make: *** [framework-pkg] Error 2
+] 
+[Use machdepCCOpts when compiling the file to toggle -(no-)rtsopts
+Ian Lynagh <igloo@earth.li>**20100331161302
+ Should fix toggling on OS X "Snow Leopard". Diagnosed by Roman Leshchinskiy.
+] 
+[Avoid a non-portable use of tar reported by Roman Leshchinskiy
+Ian Lynagh <igloo@earth.li>**20100330145802] 
+[Don't install EXTRA_PACKAGES by default
+Simon Marlow <marlowsd@gmail.com>**20100330142714
+ Ignore-this: d4cc8f87a6de8d9d1d6dc9b77130b3
+] 
+[fix a non-portable printf format
+Simon Marlow <marlowsd@gmail.com>**20100330134437
+ Ignore-this: d41c23c54ec29654cb2049de1e588570
+] 
+[avoid single quote in #error
+Simon Marlow <marlowsd@gmail.com>**20100330120346
+ Ignore-this: 663f39e7a27fead2f648fbf22d345bb4
+] 
+[use FMT_Word64 instead of locally-defined version
+Simon Marlow <marlowsd@gmail.com>**20100330114650
+ Ignore-this: 82697b8095dffb3a8e196c687006ece0
+] 
+[remove old/unused DotnetSupport and GhcLibsWithUnix
+Simon Marlow <marlowsd@gmail.com>**20100330123732
+ Ignore-this: c68814868b3671abdc369105bbeafe6c
+] 
+[fix return type cast in f.i.wrapper when using libffi (#3516)
+Simon Marlow <marlowsd@gmail.com>**20100329154220
+ Ignore-this: f898eb8c9ae2ca2009e539735b92c438
+ 
+ Original fix submitted by 
+   Sergei Trofimovich <slyfox@community.haskell.org>
+ modified by me:
+  - exclude 64-bit types
+  - compare uniques, not strings
+  - #include "ffi.h" is conditional
+] 
+[libffi: install 'ffitarget.h' header as sole 'ffi.h' is unusable
+Simon Marlow <marlowsd@gmail.com>**20100329135734
+ Ignore-this: f9b555ea289d8df1aa22cb6faa219a39
+ Submitted by: Sergei Trofimovich <slyfox@community.haskell.org>
+ Re-recorded against HEAD.
+] 
+[avoid a fork deadlock (see comments)
+Simon Marlow <marlowsd@gmail.com>**20100329132329
+ Ignore-this: 3377f88b83bb3b21e42d7fc5f0d866f
+] 
+[tidy up the end of the all_tasks list after forking
+Simon Marlow <marlowsd@gmail.com>**20100329132253
+ Ignore-this: 819d679875be5f344e816210274d1c29
+] 
+[Add a 'setKeepCAFs' external function (#3900)
+Simon Marlow <marlowsd@gmail.com>**20100329110036
+ Ignore-this: ec532a18cad4259a09847b0b9ae2e1d2
+] 
+[Explicitly check whether ar supports the @file syntax
+Ian Lynagh <igloo@earth.li>**20100329123325
+ rather than assuming that all GNU ar's do.
+ Apparently OpenBSD's older version doesn't.
+] 
+[Fix the format specifier for Int64/Word64 on Windows
+Ian Lynagh <igloo@earth.li>**20100327182126
+ mingw doesn't understand %llu/%lld - it treats them as 32-bit rather
+ than 64-bit. We use %I64u/%I64d instead.
+] 
+[Fix the ghci startmenu item
+Ian Lynagh <igloo@earth.li>**20100326235934
+ I'm not sure what changed, but it now doesn't work for me without
+ the "Start in" field being set.
+] 
+[Fix paths to docs in "Start Menu" entries in Windows installer; fixes #3847
+Ian Lynagh <igloo@earth.li>**20100326155917] 
+[Add a licence file for the Windows installer to use
+Ian Lynagh <igloo@earth.li>**20100326155130] 
+[Add gcc-g++ to the inplace mingw installation; fixes #3893
+Ian Lynagh <igloo@earth.li>**20100326154714] 
+[Add the licence file to the Windows installer. Fixes #3934
+Ian Lynagh <igloo@earth.li>**20100326152449] 
+[Quote the paths to alex and happy in configure
+Ian Lynagh <igloo@earth.li>**20100325143449
+ Ignore-this: d6d6e1a250f88985bbeea760e63a79db
+] 
+[Use </> rather than ++ "/"
+Ian Lynagh <igloo@earth.li>**20100325133237
+ This stops us generating paths like
+     c:\foo\/ghc460_0/ghc460_0.o
+ which windres doesn't understand.
+] 
+[Append $(exeext) to utils/ghc-pkg_dist_PROG
+Ian Lynagh <igloo@earth.li>**20100324233447
+ Fixes bindist creation
+] 
+[A sanity check
+Simon Marlow <marlowsd@gmail.com>**20100325110500
+ Ignore-this: 3b3b76d898c822456857e506b7531e65
+] 
+[do_checks: do not set HpAlloc if the stack check fails
+Simon Marlow <marlowsd@gmail.com>**20100325110328
+ Ignore-this: 899ac8c29ca975d03952dbf4608d758
+ 
+ This fixes a very rare heap corruption bug, whereby
+ 
+  - a context switch is requested, which sets HpLim to zero
+    (contextSwitchCapability(), called by the timer signal or
+    another Capability).
+ 
+  - simultaneously a stack check fails, in a code fragment that has
+    both a stack and a heap check.
+ 
+ The RTS then assumes that a heap-check failure has occurred and
+ subtracts HpAlloc from Hp, although in fact it was a stack-check
+ failure and retreating Hp will overwrite valid heap objects.  The bug
+ is that HpAlloc should only be set when Hp has been incremented by the
+ heap check.  See comments in rts/HeapStackCheck.cmm for more details.
+ 
+ This bug is probably incredibly rare in practice, but I happened to be
+ working on a test that triggers it reliably:
+ concurrent/should_run/throwto001, compiled with -O -threaded, args 30
+ 300 +RTS -N2, run repeatedly in a loop.
+] 
+[comments and formatting only
+Simon Marlow <marlowsd@gmail.com>**20100325104617
+ Ignore-this: c0a211e15b5953bb4a84771bcddd1d06
+] 
+[Change how perl scripts get installed; partially fixes #3863
+Ian Lynagh <igloo@earth.li>**20100324171422
+ We now regenerate them when installing, which means the path for perl
+ doesn't get baked in
+] 
+[Pass the location of gcc in the ghc wrapper script; partially fixes #3863
+Ian Lynagh <igloo@earth.li>**20100324171408
+ This means we don't rely on baking a path to gcc into the executable
+] 
+[Quote the ar path in configure
+Ian Lynagh <igloo@earth.li>**20100324162043] 
+[Remove unused cUSER_WAY_NAMES cUSER_WAY_OPTS
+Ian Lynagh <igloo@earth.li>**20100324145048] 
+[Remove unused cCONTEXT_DIFF
+Ian Lynagh <igloo@earth.li>**20100324145013] 
+[Remove unused cEnableWin32DLLs
+Ian Lynagh <igloo@earth.li>**20100324144841] 
+[Remove unused cGHC_CP
+Ian Lynagh <igloo@earth.li>**20100324144656] 
+[Fix the build for non-GNU-ar
+Ian Lynagh <igloo@earth.li>**20100324132907] 
+[Tweak the Makefile code for making .a libs; fixes trac #3642
+Ian Lynagh <igloo@earth.li>**20100323221325
+ The main change is that, rather than using "xargs ar" we now put
+ all the filenames into a file, and do "ar @file". This means that
+ ar adds all the files at once, which works around a problem where
+ files with the same basename in a later invocation were overwriting
+ the existing file in the .a archive.
+] 
+[Enable shared libraries on Windows; fixes trac #3879
+Ian Lynagh <igloo@earth.li>**20100320231414
+ Ignore-this: c93b35ec5b7a7fa6ddb286d17a616216
+] 
+[Add the external core PDF to the new build system
+Ian Lynagh <igloo@earth.li>**20100321161909] 
+[Allow specifying $threads directly when validating
+Ian Lynagh <igloo@earth.li>**20100321112835] 
+[Remove LazyUniqFM; fixes trac #3880
+Ian Lynagh <igloo@earth.li>**20100320213837] 
+[Add sliceP mapping to vectoriser builtins
+benl@ouroborus.net**20100316060517
+ Ignore-this: 54c3cafff584006b6fbfd98124330aa3
+] 
 [UNDO: slight improvement to scavenging ...
 Simon Marlow <marlowsd@gmail.com>**20100319153413
  Ignore-this: f0ab581c07361f7b57eae02dd6ec893c
@@ -2937,4 +6158,4 @@ Ian Lynagh <igloo@earth.li>**20100316005137
  Ignore-this: 234e3bc29e2f26cc59d7b03d780cc352
 ] 
 Patch bundle hash:
-1f15b4acd315c559f63349e29dc6c9d54abc58f5
+bf7d447acb365f64ecabc9d21ea9ed2ef7100e51
